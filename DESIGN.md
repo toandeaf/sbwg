@@ -432,8 +432,10 @@ grid** (buildings + water); leader and swarm both collide against it (tile-based
 tiles) and haul to a central **water store** building along **A\* routes** (§13 water logistics),
 running a state machine (idle → to-source → load → to-store → unload) and emitting delivery events.
 A **territory grid** (§8)
-claims each building's footprint + 2 tiles for its owner (tinted gold); the labour swarm is bound to
-its owner's territory, while leader/caravans roam freely.
+claims each building's footprint + 2 tiles for its owner (hold **T** to light it up); the labour
+swarm is bound to its owner's territory, while leader/caravans roam freely. First **directive**:
+hold **C** and click-drag to **claim land** — claiming a water source puts idle caravans to work
+hauling from it. (Caravans start idle until you claim something to haul.)
 
 **Threat #1 is scope.** Cross-cultural infection, espionage variety, narcotics ops, full
 faction trees, all phases — these are *later*. Build **breadth-last**.

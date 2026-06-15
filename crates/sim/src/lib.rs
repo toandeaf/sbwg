@@ -102,17 +102,13 @@ mod tests {
     }
 
     #[test]
-    fn settlement_claims_water() {
-        let mut app = headless_app();
-        app.world_mut().run_schedule(Startup);
-        app.world_mut().run_schedule(PostStartup);
-        let world = app.world();
-        let map = world.resource::<Map>();
-        let territory = world.resource::<Territory>();
-        let any_claimed = map.water_tiles().iter().any(|w| {
-            territory.owner_at(w.x.floor() as i32, w.y.floor() as i32) == Some(TOWN_OWNER)
-        });
-        assert!(any_claimed, "expected at least one claimed water source");
+    fn claim_rect_marks_tiles() {
+        let mut territory = Territory::default();
+        territory.claim_rect(TOWN_OWNER, IVec2::new(2, 3), IVec2::new(4, 5));
+        assert_eq!(territory.owner_at(2, 3), Some(TOWN_OWNER));
+        assert_eq!(territory.owner_at(4, 5), Some(TOWN_OWNER));
+        assert_eq!(territory.owner_at(1, 3), None);
+        assert_eq!(territory.owner_at(5, 5), None);
     }
 
     #[test]
@@ -159,17 +155,39 @@ mod tests {
     }
 
     #[test]
-    fn caravans_get_assigned_and_routed() {
+    fn claiming_water_assigns_a_caravan() {
         let mut app = headless_app();
         app.world_mut().run_schedule(Startup);
         app.world_mut().run_schedule(PostStartup);
-        app.world_mut().run_schedule(FixedUpdate); // assign_caravans runs here
+
+        // Caravans start idle — nothing is claimed yet.
+        {
+            let mut caravans = app.world_mut().query::<&Caravan>();
+            let world = app.world();
+            assert!(caravans.iter(world).all(|c| c.state == CaravanState::Idle));
+        }
+
+        // Claim the nearest water source (simulating the claim directive).
+        let centre = Vec2::new(MAP_W as f32 / 2.0, MAP_H as f32 / 2.0);
+        let water = {
+            let map = app.world().resource::<Map>();
+            let mut waters = map.water_tiles();
+            waters.sort_by(|a, b| {
+                a.distance_squared(centre).partial_cmp(&b.distance_squared(centre)).unwrap()
+            });
+            waters[0]
+        };
+        let tile = IVec2::new(water.x.floor() as i32, water.y.floor() as i32);
+        app.world_mut()
+            .resource_mut::<Territory>()
+            .claim_rect(TOWN_OWNER, tile - IVec2::ONE, tile + IVec2::ONE);
+
+        // The assignment system now puts a caravan on the route.
+        app.world_mut().run_schedule(FixedUpdate);
         let mut caravans = app.world_mut().query::<&Caravan>();
         let world = app.world();
-        for c in caravans.iter(world) {
-            assert_ne!(c.state, CaravanState::Idle, "caravan was not assigned");
-            assert!(c.source.is_some());
-            assert!(c.route.len() >= 2, "caravan got no route");
-        }
+        let assigned = caravans.iter(world).filter(|c| c.state != CaravanState::Idle).count();
+        assert!(assigned >= 1, "claiming water should assign a caravan");
+        assert!(caravans.iter(world).any(|c| c.route.len() >= 2), "expected a routed caravan");
     }
 }

@@ -1,45 +1,134 @@
-//! Player input: turning clicks into sim commands, and driving the camera.
+//! Player input: turning clicks/directives into sim commands, and the camera.
 
 use bevy::prelude::*;
 use protocol::{PlayerCommand, PlayerId, TilePos};
 use sim::{IncomingCommand, Map};
 
-use crate::TILE_PX;
+use crate::{tile_to_world, TILE_PX};
 
 /// The local player. Multiplayer comes later (DESIGN §17.3).
 const ME: PlayerId = 0;
 
-/// Input → commands, and camera pan/zoom.
+/// In-progress claim drag: the tile where the drag began.
+#[derive(Resource, Default)]
+struct ClaimDrag {
+    start: Option<IVec2>,
+}
+
+/// The translucent rectangle previewing a claim drag.
+#[derive(Component)]
+struct ClaimPreview;
+
+/// Input → commands, the claim directive, and camera pan/zoom.
 pub struct PlayerInputPlugin;
 
 impl Plugin for PlayerInputPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (click_to_focus, pan_zoom_camera));
+        app.init_resource::<ClaimDrag>()
+            .add_systems(Startup, spawn_claim_preview)
+            .add_systems(Update, (click_to_focus, claim_land, pan_zoom_camera));
     }
 }
 
-/// Left-click a tile → send a `SetFocus` command into the sim.
+/// Tile under the cursor, if the cursor is over the world.
+fn cursor_tile(
+    windows: &Query<&Window>,
+    cameras: &Query<(&Camera, &GlobalTransform)>,
+    map: &Map,
+) -> Option<IVec2> {
+    let window = windows.single().ok()?;
+    let cursor = window.cursor_position()?;
+    let (camera, cam_tf) = cameras.single().ok()?;
+    let world = camera.viewport_to_world_2d(cam_tf, cursor).ok()?;
+    let tx = (world.x / TILE_PX + map.width as f32 / 2.0).floor() as i32;
+    let ty = (world.y / TILE_PX + map.height as f32 / 2.0).floor() as i32;
+    Some(IVec2::new(tx, ty))
+}
+
+/// Left-click a tile → send a `SetFocus` command (suppressed while claiming).
 fn click_to_focus(
+    keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
     cameras: Query<(&Camera, &GlobalTransform)>,
     map: Res<Map>,
     mut outbox: MessageWriter<IncomingCommand>,
 ) {
-    if !buttons.just_pressed(MouseButton::Left) {
+    if keys.pressed(KeyCode::KeyC) || !buttons.just_pressed(MouseButton::Left) {
         return;
     }
-    let Ok(window) = windows.single() else { return };
-    let Some(cursor) = window.cursor_position() else { return };
-    let Ok((camera, cam_tf)) = cameras.single() else { return };
-    let Ok(world) = camera.viewport_to_world_2d(cam_tf, cursor) else { return };
-
-    let tx = (world.x / TILE_PX + map.width as f32 / 2.0).floor() as i32;
-    let ty = (world.y / TILE_PX + map.height as f32 / 2.0).floor() as i32;
+    let Some(tile) = cursor_tile(&windows, &cameras, &map) else { return };
     outbox.write(IncomingCommand(PlayerCommand::SetFocus {
         player: ME,
-        at: TilePos::new(tx, ty),
+        at: TilePos::new(tile.x, tile.y),
     }));
+}
+
+fn spawn_claim_preview(mut commands: Commands) {
+    commands.spawn((
+        ClaimPreview,
+        Sprite::from_color(Color::srgba(0.3, 0.9, 0.4, 0.25), Vec2::splat(TILE_PX)),
+        Transform::from_translation(Vec3::new(0.0, 0.0, 3.0)),
+        Visibility::Hidden,
+    ));
+}
+
+/// Directive: hold **C** and click-drag to claim the tiles under the selection.
+fn claim_land(
+    keys: Res<ButtonInput<KeyCode>>,
+    buttons: Res<ButtonInput<MouseButton>>,
+    windows: Query<&Window>,
+    cameras: Query<(&Camera, &GlobalTransform)>,
+    map: Res<Map>,
+    mut drag: ResMut<ClaimDrag>,
+    mut outbox: MessageWriter<IncomingCommand>,
+    mut preview: Query<(&mut Sprite, &mut Transform, &mut Visibility), With<ClaimPreview>>,
+) {
+    // Not in claim mode → cancel any drag and hide the preview.
+    if !keys.pressed(KeyCode::KeyC) {
+        drag.start = None;
+        if let Ok((_, _, mut vis)) = preview.single_mut() {
+            *vis = Visibility::Hidden;
+        }
+        return;
+    }
+
+    let cursor = cursor_tile(&windows, &cameras, &map);
+    if buttons.just_pressed(MouseButton::Left) {
+        drag.start = cursor;
+    }
+
+    // Live preview of the selection rectangle.
+    if let (Some(start), Some(end)) = (drag.start, cursor) {
+        let (min, max) = (start.min(end), start.max(end));
+        if let Ok((mut sprite, mut transform, mut vis)) = preview.single_mut() {
+            let w = (max.x - min.x + 1) as f32;
+            let h = (max.y - min.y + 1) as f32;
+            let centre = Vec2::new((min.x + max.x) as f32 / 2.0 + 0.5, (min.y + max.y) as f32 / 2.0 + 0.5);
+            sprite.custom_size = Some(Vec2::new(w * TILE_PX, h * TILE_PX));
+            transform.translation = tile_to_world(centre, &map).extend(3.0);
+            *vis = Visibility::Visible;
+        }
+    } else if let Ok((_, _, mut vis)) = preview.single_mut() {
+        *vis = Visibility::Hidden;
+    }
+
+    // Commit the claim on release.
+    if buttons.just_released(MouseButton::Left) {
+        if let (Some(start), Some(end)) = (drag.start, cursor) {
+            let (min, max) = (start.min(end), start.max(end));
+            outbox.write(IncomingCommand(PlayerCommand::ClaimArea {
+                player: ME,
+                min: TilePos::new(min.x, min.y),
+                max: TilePos::new(max.x, max.y),
+            }));
+            info!("claim directive: ({}, {})..=({}, {})", min.x, min.y, max.x, max.y);
+        }
+        drag.start = None;
+        if let Ok((_, _, mut vis)) = preview.single_mut() {
+            *vis = Visibility::Hidden;
+        }
+    }
 }
 
 /// WASD to pan, Q/E to zoom out/in (camera transform only — no projection fuss).

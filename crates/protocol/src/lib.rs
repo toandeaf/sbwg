@@ -44,6 +44,8 @@ impl Terrain {
 pub enum PlayerCommand {
     /// Designate a place as the current focus of intent (placeholder).
     SetFocus { player: PlayerId, at: TilePos },
+    /// Directive: claim every tile in the inclusive rectangle for `player`.
+    ClaimArea { player: PlayerId, min: TilePos, max: TilePos },
 }
 
 /// Sim → client. Notable state changes. Stub set.

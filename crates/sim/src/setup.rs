@@ -20,9 +20,6 @@ const BUILDING_TARGET: usize = 13;
 pub(crate) const TOWN_OWNER: PlayerId = 0;
 /// Tiles of claimed margin around each building (DESIGN §8 territory).
 const TERRITORY_MARGIN: i32 = 2;
-/// How many of the nearest water sources the settlement claims (placeholder —
-/// a real claim mechanic comes later, DESIGN §8).
-const CLAIMED_WATER: usize = 4;
 
 // Caravan spawn config (DESIGN §13: water logistics).
 pub(crate) const CARAVAN_COUNT: usize = 3;
@@ -104,19 +101,11 @@ fn stamp_obstacles(mut map: ResMut<Map>, buildings: Query<&Building>) {
 
 /// Claim each building's footprint plus a margin for its owner (DESIGN §8).
 fn stamp_territory(buildings: Query<&Building>, mut territory: ResMut<Territory>) {
+    let margin = IVec2::splat(TERRITORY_MARGIN);
     for building in &buildings {
-        let x0 = building.tile.x - TERRITORY_MARGIN;
-        let y0 = building.tile.y - TERRITORY_MARGIN;
-        let x1 = building.tile.x + building.size.x - 1 + TERRITORY_MARGIN;
-        let y1 = building.tile.y + building.size.y - 1 + TERRITORY_MARGIN;
-        for y in y0..=y1 {
-            for x in x0..=x1 {
-                if territory.in_bounds(x, y) {
-                    let idx = territory.idx(x, y);
-                    territory.owner[idx] = building.owner as i32;
-                }
-            }
-        }
+        let min = building.tile - margin;
+        let max = building.tile + building.size - IVec2::ONE + margin;
+        territory.claim_rect(building.owner, min, max);
     }
 }
 
@@ -125,32 +114,6 @@ fn stamp_territory(buildings: Query<&Building>, mut territory: ResMut<Territory>
 fn init_storage(map: Res<Map>, mut stores: Query<(&Building, &mut WaterStore)>) {
     for (building, mut store) in &mut stores {
         store.pos = map.find_walkable_near(building.center(), 1.0);
-    }
-}
-
-/// Claim the nearest water sources into the settlement's territory (placeholder).
-fn claim_water(map: Res<Map>, mut territory: ResMut<Territory>, settlements: Query<&Settlement>) {
-    let Ok(settlement) = settlements.single() else { return };
-    let mut waters: Vec<IVec2> = map
-        .water_tiles()
-        .into_iter()
-        .map(|w| IVec2::new(w.x.floor() as i32, w.y.floor() as i32))
-        .collect();
-    waters.sort_by(|a, b| {
-        let da = Vec2::new(a.x as f32 + 0.5, a.y as f32 + 0.5).distance_squared(settlement.pos);
-        let db = Vec2::new(b.x as f32 + 0.5, b.y as f32 + 0.5).distance_squared(settlement.pos);
-        da.partial_cmp(&db).unwrap()
-    });
-    for tile in waters.into_iter().take(CLAIMED_WATER) {
-        for dy in -1..=1 {
-            for dx in -1..=1 {
-                let (x, y) = (tile.x + dx, tile.y + dy);
-                if territory.in_bounds(x, y) {
-                    let idx = territory.idx(x, y);
-                    territory.owner[idx] = settlement.owner as i32;
-                }
-            }
-        }
     }
 }
 
@@ -180,18 +143,11 @@ impl Plugin for SetupPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, (spawn_settlement, build_town))
             // After buildings exist: stamp grids, fix the store's drop-point,
-            // claim water, then place the leader and idle caravans.
+            // then place the leader and (idle) caravans. Water is claimed at
+            // runtime via the player's claim directive.
             .add_systems(
                 PostStartup,
-                (
-                    stamp_obstacles,
-                    stamp_territory,
-                    init_storage,
-                    claim_water,
-                    spawn_leader,
-                    spawn_caravans,
-                )
-                    .chain(),
+                (stamp_obstacles, stamp_territory, init_storage, spawn_leader, spawn_caravans).chain(),
             );
     }
 }

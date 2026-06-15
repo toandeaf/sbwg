@@ -143,6 +143,18 @@ impl Territory {
     pub fn owned_by(&self, p: Vec2, player: PlayerId) -> bool {
         self.owner_at(p.x.floor() as i32, p.y.floor() as i32) == Some(player)
     }
+
+    /// Claim every in-bounds tile in the inclusive rectangle for `player`.
+    pub fn claim_rect(&mut self, player: PlayerId, min: IVec2, max: IVec2) {
+        for y in min.y..=max.y {
+            for x in min.x..=max.x {
+                if self.in_bounds(x, y) {
+                    let idx = self.idx(x, y);
+                    self.owner[idx] = player as i32;
+                }
+            }
+        }
+    }
 }
 
 /// Deterministic RNG so the sim stays reproducible for tests/replay. We are

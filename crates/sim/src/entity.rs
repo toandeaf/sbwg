@@ -7,7 +7,7 @@
 use bevy::prelude::*;
 use protocol::{PlayerCommand, PlayerId, SimEvent};
 
-use crate::map::{Map, SimRng, SimTick};
+use crate::map::{Map, SimRng, SimTick, Territory};
 use crate::messages::{IncomingCommand, OutgoingEvent};
 
 /// How far the lone "leader" — a real, authoritative, interpolated mover (the
@@ -63,10 +63,11 @@ pub struct Mover {
 
 // ---- Systems ---------------------------------------------------------------
 
-/// Drain inbound commands, mutate state, and publish a state-change event.
+/// Drain inbound commands (player directives), mutate state, and publish events.
 fn apply_commands(
     mut inbox: MessageReader<IncomingCommand>,
     mut outbox: MessageWriter<OutgoingEvent>,
+    mut territory: ResMut<Territory>,
 ) {
     for IncomingCommand(cmd) in inbox.read() {
         match cmd {
@@ -75,6 +76,13 @@ fn apply_commands(
                     player: *player,
                     at: *at,
                 }));
+            }
+            PlayerCommand::ClaimArea { player, min, max } => {
+                territory.claim_rect(
+                    *player,
+                    IVec2::new(min.x, min.y),
+                    IVec2::new(max.x, max.y),
+                );
             }
         }
     }
