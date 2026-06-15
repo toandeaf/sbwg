@@ -1,0 +1,9 @@
+[package]
+name = "sbwg"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+sim.workspace = true
+client.workspace = true
+bevy.workspace = true

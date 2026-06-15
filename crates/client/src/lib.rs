@@ -1,16 +1,12 @@
-//! Single-player client: a full Bevy app with rendering that embeds the headless
-//! [`SimPlugin`] in-process. Everything is drawn as **coloured squares**
-//! (placeholder art).
+//! Client presentation + input, as a composable Bevy plugin.
 //!
-//! The client talks to the sim only through messages and by reading public sim
-//! state for rendering — the eventual network boundary (DESIGN §17.3). Logic is
+//! Pure static code — the runnable executable lives in `binaries/`. Logic is
 //! split into [`world`] (camera + terrain + territory + event log), [`entities`]
 //! (leader, buildings, caravans, swarm), and [`player_input`] (input + camera
 //! control). Each is a [`Plugin`]; [`ClientPlugin`] composes them.
 
 use bevy::prelude::*;
-use bevy::time::Fixed;
-use sim::{Map, SimPlugin, SIM_HZ};
+use sim::Map;
 
 mod entities;
 mod player_input;
@@ -27,24 +23,8 @@ pub(crate) fn tile_to_world(p: Vec2, map: &Map) -> Vec2 {
     )
 }
 
-fn main() {
-    App::new()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "sbwg (scaffold)".into(),
-                ..default()
-            }),
-            ..default()
-        }))
-        // Drive the sim's FixedUpdate at the design tick rate.
-        .insert_resource(Time::<Fixed>::from_hz(SIM_HZ))
-        .add_plugins(SimPlugin)
-        .add_plugins(ClientPlugin)
-        .run();
-}
-
 /// Bundles the client's presentation and input plugins.
-struct ClientPlugin;
+pub struct ClientPlugin;
 
 impl Plugin for ClientPlugin {
     fn build(&self, app: &mut App) {

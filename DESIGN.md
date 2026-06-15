@@ -382,10 +382,12 @@ mid-game spike of tension.
 - **Split a headless simulation crate from the Bevy client.** The sim is the authoritative game
   logic, runs without rendering, and is unit-testable in isolation. Single most important structural
   decision — keeps multiplayer and testing tractable.
-- Workspace (implemented): `sim` (headless authoritative core, `SimPlugin`) + `client` (Bevy
-  rendering/input) + `protocol` (Bevy-free serialisable wire types). Systems stay decoupled via
-  Bevy **messages** — `IncomingCommand` (world→sim) and `OutgoingEvent` (sim→world) — which is the
-  seam the network layer will later occupy.
+- Workspace layout: **`crates/` holds libraries (static code), `binaries/` holds executables
+  (runtime wiring).** Libraries: `sim` (headless authoritative core, `SimPlugin`), `client` (Bevy
+  presentation/input, `ClientPlugin`), `protocol` (Bevy-free serialisable wire types). Executable:
+  `binaries/sbwg` — a thin `main()` that assembles `sim` + `client` and runs (`cargo run -p sbwg`).
+  Systems stay decoupled via Bevy **messages** — `IncomingCommand` (world→sim) and `OutgoingEvent`
+  (sim→world) — the seam the network layer will later occupy.
 - **Module convention: one concern, one module, one `Plugin`.** `sim` = `map` (world state) +
   `entity` (components + tick behaviour) + `setup` (worldgen) + `messages`; `client` = `world`
   (camera/terrain/territory) + `entities` (sprites/swarm/caravans) + `player_input`. Top-level
