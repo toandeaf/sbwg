@@ -386,6 +386,10 @@ mid-game spike of tension.
   rendering/input) + `protocol` (Bevy-free serialisable wire types). Systems stay decoupled via
   Bevy **messages** — `IncomingCommand` (world→sim) and `OutgoingEvent` (sim→world) — which is the
   seam the network layer will later occupy.
+- **Module convention: one concern, one module, one `Plugin`.** `sim` = `map` (world state) +
+  `entity` (components + tick behaviour) + `setup` (worldgen) + `messages`; `client` = `world`
+  (camera/terrain/territory) + `entities` (sprites/swarm/caravans) + `player_input`. Top-level
+  `SimPlugin`/`ClientPlugin` just compose the sub-plugins.
 
 ### 17.3 Netcode **[LOCKED: approach]**
 - **Server-authoritative simulation with state replication.** *Not* lockstep determinism (a trap
@@ -422,7 +426,9 @@ drawn as a **cosmetic swarm** (§17.4), and one authoritative **leader**
 drawn with tick-interpolation — both halves of §17.4 demonstrated. The sim owns a **tile passability
 grid** (buildings + water); leader and swarm both collide against it (tile-based, no physics engine).
 **Caravans** (real movers, camel-train visuals) run a fixed state machine hauling water from oases
-to the settlement's store (§13 water logistics), emitting delivery events.
+to the settlement's store (§13 water logistics), emitting delivery events. A **territory grid** (§8)
+claims each building's footprint + 2 tiles for its owner (tinted gold); the labour swarm is bound to
+its owner's territory, while leader/caravans roam freely.
 
 **Threat #1 is scope.** Cross-cultural infection, espionage variety, narcotics ops, full
 faction trees, all phases — these are *later*. Build **breadth-last**.
