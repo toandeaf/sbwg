@@ -1,0 +1,9 @@
+[package]
+name = "client"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+protocol.workspace = true
+sim.workspace = true
+bevy.workspace = true

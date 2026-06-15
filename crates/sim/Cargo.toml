@@ -1,0 +1,12 @@
+[package]
+name = "sim"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+protocol.workspace = true
+serde.workspace = true
+# NOTE: pulls full Bevy for now. It's the same build the client needs, so there's
+# no marginal compile cost — but trim this to a headless feature subset later so
+# the sim crate is genuinely renderless (DESIGN §17.2).
+bevy.workspace = true

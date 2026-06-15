@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = ["crates/protocol", "crates/sim", "crates/client"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+protocol = { path = "crates/protocol" }
+sim = { path = "crates/sim" }
+serde = { version = "1", features = ["derive"] }
+bevy = "0.18"
