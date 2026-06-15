@@ -389,9 +389,10 @@ mid-game spike of tension.
   Systems stay decoupled via Bevy **messages** — `IncomingCommand` (world→sim) and `OutgoingEvent`
   (sim→world) — the seam the network layer will later occupy.
 - **Module convention: one concern, one module, one `Plugin`.** `sim` = `map` (world state) +
-  `entity` (components + tick behaviour) + `setup` (worldgen) + `messages`; `client` = `world`
-  (camera/terrain/territory) + `entities` (sprites/swarm/caravans) + `player_input`. Top-level
-  `SimPlugin`/`ClientPlugin` just compose the sub-plugins.
+  `entity` (components + tick behaviour) + `caravan` (water-haul logistics) + `setup` (worldgen) +
+  `path` (A* helper) + `messages`; `client` = `world` (camera/terrain/territory) + `entities`
+  (sprites/swarm/caravans) + `player_input`. Top-level `SimPlugin`/`ClientPlugin` compose the
+  sub-plugins.
 
 ### 17.3 Netcode **[LOCKED: approach]**
 - **Server-authoritative simulation with state replication.** *Not* lockstep determinism (a trap
@@ -427,8 +428,10 @@ tests green. Client renders a terrain map (sand/oasis/well — water as §13 res
 drawn as a **cosmetic swarm** (§17.4), and one authoritative **leader**
 drawn with tick-interpolation — both halves of §17.4 demonstrated. The sim owns a **tile passability
 grid** (buildings + water); leader and swarm both collide against it (tile-based, no physics engine).
-**Caravans** (real movers, camel-train visuals) run a fixed state machine hauling water from oases
-to the settlement's store (§13 water logistics), emitting delivery events. A **territory grid** (§8)
+**Caravans** (real movers, camel-train visuals) are assigned to **claimed** water sources (owned
+tiles) and haul to a central **water store** building along **A\* routes** (§13 water logistics),
+running a state machine (idle → to-source → load → to-store → unload) and emitting delivery events.
+A **territory grid** (§8)
 claims each building's footprint + 2 tiles for its owner (tinted gold); the labour swarm is bound to
 its owner's territory, while leader/caravans roam freely.
 

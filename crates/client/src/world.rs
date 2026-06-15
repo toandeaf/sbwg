@@ -13,7 +13,10 @@ pub struct WorldViewPlugin;
 impl Plugin for WorldViewPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, (setup_camera, spawn_tile_grid))
-            .add_systems(Update, (draw_territory_overlay, log_sim_events));
+            .add_systems(
+                Update,
+                (draw_territory_overlay, show_territory_while_held, log_sim_events),
+            );
     }
 }
 
@@ -42,8 +45,12 @@ fn spawn_tile_grid(mut commands: Commands, map: Res<Map>) {
     }
 }
 
-/// Tint claimed tiles a faint gold so territory is visible. Runs once, after the
-/// sim has stamped the territory grid (DESIGN §8).
+/// Marks a per-tile territory highlight (revealed only while T is held).
+#[derive(Component)]
+struct TerritoryOverlay;
+
+/// Spawn a hidden gold highlight over every claimed tile, once, after the sim has
+/// stamped the territory grid (DESIGN §8). Revealed by `show_territory_while_held`.
 fn draw_territory_overlay(
     mut done: Local<bool>,
     mut commands: Commands,
@@ -60,11 +67,28 @@ fn draw_territory_overlay(
                 let centre = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
                 let world = tile_to_world(centre, &map);
                 commands.spawn((
-                    Sprite::from_color(Color::srgba(0.95, 0.82, 0.25, 0.15), Vec2::splat(TILE_PX - 1.0)),
+                    TerritoryOverlay,
+                    Sprite::from_color(Color::srgba(1.0, 0.85, 0.2, 0.4), Vec2::splat(TILE_PX - 1.0)),
                     Transform::from_translation(world.extend(0.25)),
+                    Visibility::Hidden,
                 ));
             }
         }
+    }
+}
+
+/// Light up owned tiles while T is held (DESIGN §8 territory reveal).
+fn show_territory_while_held(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut overlays: Query<&mut Visibility, With<TerritoryOverlay>>,
+) {
+    let target = if keys.pressed(KeyCode::KeyT) {
+        Visibility::Visible
+    } else {
+        Visibility::Hidden
+    };
+    for mut visibility in &mut overlays {
+        *visibility = target;
     }
 }
 
