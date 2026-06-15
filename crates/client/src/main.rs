@@ -16,7 +16,7 @@
 use bevy::prelude::*;
 use bevy::time::Fixed;
 use protocol::{PlayerCommand, PlayerId, SimEvent, Terrain, TilePos};
-use sim::{IncomingCommand, Map, Mover, OutgoingEvent, Settlement, SimPlugin, SIM_HZ};
+use sim::{Building, Caravan, IncomingCommand, Map, Mover, OutgoingEvent, Settlement, SimPlugin, SIM_HZ};
 
 /// On-screen size of one tile, in pixels (at default zoom).
 const TILE_PX: f32 = 24.0;
@@ -49,7 +49,9 @@ impl Plugin for ClientPlugin {
                 (
                     attach_leader_sprite,
                     sync_leader_transform,
-                    attach_settlement_sprite,
+                    attach_building_sprites,
+                    attach_caravan_visual,
+                    sync_caravan_transform,
                     reconcile_swarm,
                     animate_swarm,
                     click_to_focus,
@@ -126,18 +128,24 @@ fn sync_leader_transform(
     }
 }
 
-// ---- Settlement ------------------------------------------------------------
+// ---- Buildings -------------------------------------------------------------
 
-/// Draw the settlement as a chunky mud-brick square.
-fn attach_settlement_sprite(
+/// Draw each building as a mud-brick rectangle sized to its tile footprint.
+fn attach_building_sprites(
     mut commands: Commands,
     map: Res<Map>,
-    new_settlements: Query<(Entity, &Settlement), Without<Sprite>>,
+    new_buildings: Query<(Entity, &Building), Without<Sprite>>,
 ) {
-    for (entity, settlement) in &new_settlements {
-        let world = tile_to_world(settlement.pos, &map);
+    for (entity, building) in &new_buildings {
+        let world = tile_to_world(building.center(), &map);
+        let size = Vec2::new(
+            building.size.x as f32 * TILE_PX - 2.0,
+            building.size.y as f32 * TILE_PX - 2.0,
+        );
+        // slight per-building shade variation
+        let v = ((building.tile.x * 5 + building.tile.y * 9).rem_euclid(4)) as f32 * 0.03;
         commands.entity(entity).insert((
-            Sprite::from_color(Color::srgb(0.35, 0.22, 0.12), Vec2::splat(TILE_PX * 1.6)),
+            Sprite::from_color(Color::srgb(0.40 + v, 0.27 + v, 0.15 + v), size),
             Transform::from_translation(world.extend(0.5)),
         ));
     }
@@ -251,6 +259,63 @@ fn animate_swarm(time: Res<Time>, map: Res<Map>, mut dots: Query<(&mut SwarmDot,
     }
 }
 
+// ---- Caravans (real movers, with a camel train) ----------------------------
+
+/// Most camels to draw trailing a caravan.
+const MAX_VISUAL_CAMELS: u32 = 5;
+/// Spacing between trailing camels, in pixels.
+const CAMEL_SPACING: f32 = TILE_PX * 0.45;
+
+/// Give a caravan its lead sprite plus a trail of camel sprites as children.
+/// Children inherit the parent's rotation, so the train follows behind the
+/// caravan's heading automatically (DESIGN §17.4: caravans are real movers).
+fn attach_caravan_visual(
+    mut commands: Commands,
+    map: Res<Map>,
+    new_caravans: Query<(Entity, &Caravan), Without<Sprite>>,
+) {
+    for (entity, caravan) in &new_caravans {
+        let world = tile_to_world(caravan.pos, &map);
+        commands
+            .entity(entity)
+            .insert((
+                Sprite::from_color(Color::srgb(0.45, 0.30, 0.15), Vec2::splat(TILE_PX * 0.5)),
+                Transform::from_translation(world.extend(2.0)),
+            ))
+            .with_children(|parent| {
+                let n = caravan.camels.min(MAX_VISUAL_CAMELS);
+                for k in 0..n {
+                    let back = -((k + 1) as f32) * CAMEL_SPACING;
+                    let lateral = if k % 2 == 0 { 2.0 } else { -2.0 };
+                    parent.spawn((
+                        Sprite::from_color(Color::srgb(0.78, 0.62, 0.40), Vec2::splat(TILE_PX * 0.35)),
+                        Transform::from_xyz(back, lateral, 0.0),
+                    ));
+                }
+            });
+    }
+}
+
+/// Interpolate the caravan between sim ticks and face it along its heading; the
+/// camel children follow via the transform hierarchy.
+fn sync_caravan_transform(
+    map: Res<Map>,
+    fixed_time: Res<Time<Fixed>>,
+    mut caravans: Query<(&Caravan, &mut Transform)>,
+) {
+    let alpha = fixed_time.overstep_fraction();
+    for (caravan, mut transform) in &mut caravans {
+        let interpolated = caravan.prev.lerp(caravan.pos, alpha);
+        let world = tile_to_world(interpolated, &map);
+        transform.translation.x = world.x;
+        transform.translation.y = world.y;
+        let dir = caravan.pos - caravan.prev;
+        if dir.length_squared() > 1e-6 {
+            transform.rotation = Quat::from_rotation_z(dir.y.atan2(dir.x));
+        }
+    }
+}
+
 // ---- Input / events --------------------------------------------------------
 
 /// Left-click a tile → send a `SetFocus` command into the sim.
@@ -283,6 +348,9 @@ fn log_sim_events(mut inbox: MessageReader<OutgoingEvent>) {
         match event {
             SimEvent::FocusChanged { player, at } => {
                 info!("focus: player {player} -> ({}, {})", at.x, at.y);
+            }
+            SimEvent::WaterDelivered { amount, stored } => {
+                info!("caravan delivered {amount} water (settlement now holds {stored})");
             }
             SimEvent::Ticked { tick } => {
                 if tick % 50 == 0 {

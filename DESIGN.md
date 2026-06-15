@@ -417,9 +417,12 @@ The "ants at a zoom-out" look (dense, numerous — *not* AoE's sparse-symbolic c
 
 **Status:** workspace scaffolded (sim/client/protocol), Bevy 0.18.1, message-decoupled, builds &
 tests green. Client renders a terrain map (sand/oasis/well — water as §13 resource), a settlement
-with a population cohort drawn as a **cosmetic swarm** (§17.4), and one authoritative **leader**
+(a clustered town of ~10–15 multi-tile **buildings** with street gaps) whose population cohort is
+drawn as a **cosmetic swarm** (§17.4), and one authoritative **leader**
 drawn with tick-interpolation — both halves of §17.4 demonstrated. The sim owns a **tile passability
 grid** (buildings + water); leader and swarm both collide against it (tile-based, no physics engine).
+**Caravans** (real movers, camel-train visuals) run a fixed state machine hauling water from oases
+to the settlement's store (§13 water logistics), emitting delivery events.
 
 **Threat #1 is scope.** Cross-cultural infection, espionage variety, narcotics ops, full
 faction trees, all phases — these are *later*. Build **breadth-last**.

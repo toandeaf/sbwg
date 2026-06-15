@@ -24,12 +24,26 @@ pub const MAP_H: i32 = 24;
 /// client draws the *crowd*.
 pub const SETTLEMENT_POP: u32 = 60;
 
-/// Half-width (in tiles) of a building's blocking footprint.
-const BUILDING_FOOTPRINT_R: i32 = 1;
+/// Town generation (DESIGN §6.2: a dense cluster of ~4–6-tile buildings).
+const TOWN_RADIUS: f32 = 7.0;
+const BUILDING_TARGET: usize = 13;
 
 /// How far the lone "leader" — a real, authoritative, interpolated mover (the
 /// other half of §17.4) — wanders from home.
 const LEADER_RADIUS: f32 = 4.0;
+const LEADER_MAX_SPEED: f32 = 0.12; // tiles/tick (~1.2 tiles/sec at 10 Hz)
+const LEADER_ACCEL: f32 = 0.02; // random nudge per tick
+const LEADER_DAMPING: f32 = 0.9; // velocity smoothing (less twitchy)
+
+// Caravan tuning (DESIGN §13: water logistics).
+const CARAVAN_COUNT: usize = 3;
+const CARAVAN_SPEED: f32 = 2.0; // tiles/second
+const CARAVAN_CAPACITY: u32 = 50; // units of water per trip
+const CARAVAN_CAMELS: u32 = 6;
+const CARAVAN_PEOPLE: u32 = 4;
+const LOAD_SECS: f32 = 1.5;
+const UNLOAD_SECS: f32 = 1.5;
+const ARRIVE_EPS: f32 = 0.15; // tiles
 
 // ---- Boundary messages -----------------------------------------------------
 
@@ -117,6 +131,19 @@ impl Map {
         }
         centre
     }
+
+    /// Centres of all water tiles (DESIGN §13: water sources).
+    pub fn water_tiles(&self) -> Vec<Vec2> {
+        let mut out = Vec::new();
+        for y in 0..self.height {
+            for x in 0..self.width {
+                if self.terrain_at(x, y).is_water() {
+                    out.push(Vec2::new(x as f32 + 0.5, y as f32 + 0.5));
+                }
+            }
+        }
+        out
+    }
 }
 
 impl Default for Map {
@@ -157,23 +184,73 @@ impl SimRng {
 // ---- Components -------------------------------------------------------------
 
 /// A place where people live. Its `population` is the cohort the client draws as
-/// a cosmetic swarm (DESIGN §14/§17.4).
+/// a cosmetic swarm (DESIGN §14/§17.4); `water_stored` is filled by caravans.
 #[derive(Component, Debug)]
 pub struct Settlement {
     /// Continuous tile-space position (DESIGN §6.2).
     pub pos: Vec2,
     pub population: u32,
+    pub water_stored: u32,
+}
+
+/// A physical structure occupying a tile rectangle. Buildings block movement
+/// and together form a settlement's footprint (DESIGN §6.2).
+#[derive(Component, Debug)]
+pub struct Building {
+    /// Lower-left tile of the footprint.
+    pub tile: IVec2,
+    /// Footprint size in tiles.
+    pub size: IVec2,
+}
+
+impl Building {
+    /// Continuous tile-space centre of the footprint.
+    pub fn center(&self) -> Vec2 {
+        Vec2::new(
+            self.tile.x as f32 + self.size.x as f32 / 2.0,
+            self.tile.y as f32 + self.size.y as f32 / 2.0,
+        )
+    }
 }
 
 /// A real, authoritative agent the client draws as a single interpolated square
-/// (stands in for a leader/caravan — DESIGN §17.4). `prev` holds last tick's
-/// position so the client can interpolate between 10 Hz steps.
+/// (stands in for a leader — DESIGN §17.4). `prev` holds last tick's position so
+/// the client can interpolate between 10 Hz steps.
 #[derive(Component, Debug, Clone, Copy)]
 pub struct Mover {
     pub home: Vec2,
     pub prev: Vec2,
     pub pos: Vec2,
     pub vel: Vec2,
+}
+
+/// What a caravan is doing right now (deterministic, fixed behaviour — unlike
+/// the cosmetic swarm).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaravanState {
+    ToSource,
+    Loading,
+    ToDest,
+    Unloading,
+}
+
+/// A real, authoritative goods-hauler: a body of camels + people that shuttles
+/// water from a source to a settlement (DESIGN §13). Interpolated like a leader.
+#[derive(Component, Debug)]
+pub struct Caravan {
+    pub prev: Vec2,
+    pub pos: Vec2,
+    pub camels: u32,
+    pub people: u32,
+    pub capacity: u32,
+    pub cargo: u32,
+    /// Walkable draw-point beside a water tile.
+    pub source: Vec2,
+    /// Walkable drop-point beside the settlement.
+    pub dest: Vec2,
+    pub state: CaravanState,
+    /// Seconds remaining for the current load/unload.
+    pub timer: f32,
 }
 
 // ---- Plugin ----------------------------------------------------------------
@@ -187,31 +264,32 @@ impl Plugin for SimPlugin {
             .init_resource::<SimRng>()
             .add_message::<IncomingCommand>()
             .add_message::<OutgoingEvent>()
-            .add_systems(Startup, spawn_settlement)
-            // After settlements exist: stamp their footprints into the collision
-            // grid, then place the leader on a walkable tile outside them.
-            .add_systems(PostStartup, (stamp_obstacles, spawn_leader).chain())
-            // One ordered chain per tick: ingest intent, step the world, count.
+            .add_systems(Startup, (spawn_settlement, build_town))
+            // After buildings exist: stamp footprints into the collision grid,
+            // then place the leader and caravans on walkable tiles outside them.
+            .add_systems(
+                PostStartup,
+                (stamp_obstacles, spawn_leader, spawn_caravans).chain(),
+            )
+            // One ordered chain per tick.
             .add_systems(
                 FixedUpdate,
-                (apply_commands, wander_leader, advance_tick).chain(),
+                (apply_commands, wander_leader, drive_caravans, advance_tick).chain(),
             );
     }
 }
 
 fn spawn_settlement(mut commands: Commands, map: Res<Map>) {
     let pos = Vec2::new(map.width as f32 / 2.0, map.height as f32 / 2.0);
-    commands.spawn(Settlement { pos, population: SETTLEMENT_POP });
+    commands.spawn(Settlement { pos, population: SETTLEMENT_POP, water_stored: 0 });
 }
 
 /// Bake building footprints into the map's collision grid.
-fn stamp_obstacles(mut map: ResMut<Map>, settlements: Query<&Settlement>) {
-    for settlement in &settlements {
-        let cx = settlement.pos.x.floor() as i32;
-        let cy = settlement.pos.y.floor() as i32;
-        for dy in -BUILDING_FOOTPRINT_R..=BUILDING_FOOTPRINT_R {
-            for dx in -BUILDING_FOOTPRINT_R..=BUILDING_FOOTPRINT_R {
-                let (x, y) = (cx + dx, cy + dy);
+fn stamp_obstacles(mut map: ResMut<Map>, buildings: Query<&Building>) {
+    for building in &buildings {
+        for dy in 0..building.size.y {
+            for dx in 0..building.size.x {
+                let (x, y) = (building.tile.x + dx, building.tile.y + dy);
                 if map.in_bounds(x, y) {
                     let idx = map.idx(x, y);
                     map.blocked[idx] = true;
@@ -221,11 +299,84 @@ fn stamp_obstacles(mut map: ResMut<Map>, settlements: Query<&Settlement>) {
     }
 }
 
+/// Lay out a clustered town around the settlement anchor, leaving 1-tile gaps as
+/// streets so the crowd can move between buildings (DESIGN §6.2/§17.4).
+fn build_town(mut commands: Commands, map: Res<Map>, mut rng: ResMut<SimRng>) {
+    let cx = (map.width / 2) as f32;
+    let cy = (map.height / 2) as f32;
+    let mut placed: Vec<(i32, i32, i32, i32)> = Vec::new();
+
+    // Central great-house, covering the centre tile.
+    let centre = IVec2::new(map.width / 2 - 1, map.height / 2 - 1);
+    commands.spawn(Building { tile: centre, size: IVec2::new(2, 2) });
+    placed.push((centre.x, centre.y, 2, 2));
+
+    let sizes = [IVec2::new(2, 2), IVec2::new(2, 3), IVec2::new(3, 2)];
+    for _ in 0..BUILDING_TARGET {
+        for _try in 0..20 {
+            let size = sizes[(rng.next_u64() % sizes.len() as u64) as usize];
+            // Uniform-ish point in the town disc.
+            let r = (rng.next_u64() as f32 / u64::MAX as f32).sqrt() * TOWN_RADIUS;
+            let a = rng.next_u64() as f32 / u64::MAX as f32 * std::f32::consts::TAU;
+            let x = (cx + a.cos() * r).floor() as i32 - size.x / 2;
+            let y = (cy + a.sin() * r).floor() as i32 - size.y / 2;
+            if building_fits(&placed, &map, x, y, size.x, size.y) {
+                commands.spawn(Building { tile: IVec2::new(x, y), size });
+                placed.push((x, y, size.x, size.y));
+                break;
+            }
+        }
+    }
+}
+
+/// A candidate building fits if every tile is walkable (no water/edge) and it
+/// keeps a 1-tile gap from already-placed buildings.
+fn building_fits(placed: &[(i32, i32, i32, i32)], map: &Map, x: i32, y: i32, w: i32, h: i32) -> bool {
+    for dy in 0..h {
+        for dx in 0..w {
+            if !map.is_walkable(x + dx, y + dy) {
+                return false;
+            }
+        }
+    }
+    for &(px, py, pw, ph) in placed {
+        if x - 1 < px + pw && px < x + w + 1 && y - 1 < py + ph && py < y + h + 1 {
+            return false;
+        }
+    }
+    true
+}
+
 fn spawn_leader(mut commands: Commands, map: Res<Map>, settlements: Query<&Settlement>) {
     let Ok(settlement) = settlements.single() else { return };
-    // Start a few tiles from the settlement, on a walkable tile.
     let home = map.find_walkable_near(settlement.pos, 3.0);
     commands.spawn(Mover { home, prev: home, pos: home, vel: Vec2::ZERO });
+}
+
+/// Spawn caravans, each assigned to a water source, dropping at the settlement.
+fn spawn_caravans(mut commands: Commands, map: Res<Map>, settlements: Query<&Settlement>) {
+    let Ok(settlement) = settlements.single() else { return };
+    let waters = map.water_tiles();
+    if waters.is_empty() {
+        return;
+    }
+    let dest = map.find_walkable_near(settlement.pos, 2.0);
+    for i in 0..CARAVAN_COUNT {
+        let water = waters[i % waters.len()];
+        let source = map.find_walkable_near(water, 1.0);
+        commands.spawn(Caravan {
+            prev: dest,
+            pos: dest,
+            camels: CARAVAN_CAMELS,
+            people: CARAVAN_PEOPLE,
+            capacity: CARAVAN_CAPACITY,
+            cargo: 0,
+            source,
+            dest,
+            state: CaravanState::ToSource,
+            timer: 0.0,
+        });
+    }
 }
 
 /// Drain inbound commands, mutate state, and publish a state-change event.
@@ -236,7 +387,6 @@ fn apply_commands(
     for IncomingCommand(cmd) in inbox.read() {
         match cmd {
             PlayerCommand::SetFocus { player, at } => {
-                // Placeholder behaviour: acknowledge via an event for now.
                 outbox.write(OutgoingEvent(SimEvent::FocusChanged {
                     player: *player,
                     at: *at,
@@ -250,11 +400,11 @@ fn apply_commands(
 fn wander_leader(map: Res<Map>, mut rng: ResMut<SimRng>, mut movers: Query<&mut Mover>) {
     for mut m in &mut movers {
         m.prev = m.pos; // snapshot for client interpolation
-        m.vel.x += rng.signed_unit() * 0.06;
-        m.vel.y += rng.signed_unit() * 0.06;
-        m.vel = m.vel.clamp_length_max(0.5);
+        m.vel *= LEADER_DAMPING; // smooth out erratic direction changes
+        m.vel.x += rng.signed_unit() * LEADER_ACCEL;
+        m.vel.y += rng.signed_unit() * LEADER_ACCEL;
+        m.vel = m.vel.clamp_length_max(LEADER_MAX_SPEED);
 
-        // Axis-separated move so we slide along walls instead of sticking.
         let mut np = m.pos;
         let try_x = Vec2::new(m.pos.x + m.vel.x, m.pos.y);
         if map.walkable_at(try_x) {
@@ -269,7 +419,6 @@ fn wander_leader(map: Res<Map>, mut rng: ResMut<SimRng>, mut movers: Query<&mut 
             m.vel.y = -m.vel.y;
         }
 
-        // Keep within home radius.
         let off = np - m.home;
         if off.length() > LEADER_RADIUS {
             let n = off.normalize_or_zero();
@@ -278,6 +427,82 @@ fn wander_leader(map: Res<Map>, mut rng: ResMut<SimRng>, mut movers: Query<&mut 
             m.vel = v - 2.0 * v.dot(n) * n;
         }
         m.pos = np;
+    }
+}
+
+/// Step a point toward a target with axis-separated tile collision (wall-slide).
+/// Returns the new position and whether it has effectively arrived.
+fn step_toward(map: &Map, pos: Vec2, target: Vec2, max_step: f32) -> (Vec2, bool) {
+    let to = target - pos;
+    let dist = to.length();
+    if dist <= ARRIVE_EPS {
+        return (pos, true);
+    }
+    let step = to / dist * max_step.min(dist);
+    let mut np = pos;
+    let try_x = Vec2::new(pos.x + step.x, pos.y);
+    if map.walkable_at(try_x) {
+        np.x = try_x.x;
+    }
+    let try_y = Vec2::new(np.x, pos.y + step.y);
+    if map.walkable_at(try_y) {
+        np.y = try_y.y;
+    }
+    (np, (np - target).length() <= ARRIVE_EPS)
+}
+
+/// Run each caravan's fixed haul cycle: to water, load, to settlement, unload.
+fn drive_caravans(
+    time: Res<Time>,
+    map: Res<Map>,
+    mut caravans: Query<&mut Caravan>,
+    mut settlements: Query<&mut Settlement>,
+    mut outbox: MessageWriter<OutgoingEvent>,
+) {
+    let dt = time.delta_secs();
+    let max_step = CARAVAN_SPEED * dt;
+    for mut c in &mut caravans {
+        c.prev = c.pos; // snapshot for client interpolation
+        match c.state {
+            CaravanState::ToSource => {
+                let (np, arrived) = step_toward(&map, c.pos, c.source, max_step);
+                c.pos = np;
+                if arrived {
+                    c.state = CaravanState::Loading;
+                    c.timer = LOAD_SECS;
+                }
+            }
+            CaravanState::Loading => {
+                c.timer -= dt;
+                if c.timer <= 0.0 {
+                    c.cargo = c.capacity;
+                    c.state = CaravanState::ToDest;
+                }
+            }
+            CaravanState::ToDest => {
+                let (np, arrived) = step_toward(&map, c.pos, c.dest, max_step);
+                c.pos = np;
+                if arrived {
+                    c.state = CaravanState::Unloading;
+                    c.timer = UNLOAD_SECS;
+                }
+            }
+            CaravanState::Unloading => {
+                c.timer -= dt;
+                if c.timer <= 0.0 {
+                    let amount = c.cargo;
+                    c.cargo = 0;
+                    if let Ok(mut settlement) = settlements.single_mut() {
+                        settlement.water_stored += amount;
+                        outbox.write(OutgoingEvent(SimEvent::WaterDelivered {
+                            amount,
+                            stored: settlement.water_stored,
+                        }));
+                    }
+                    c.state = CaravanState::ToSource;
+                }
+            }
+        }
     }
 }
 
@@ -295,6 +520,9 @@ mod tests {
     fn sim_advances_ticks_headlessly() {
         let mut app = App::new();
         app.add_plugins(SimPlugin);
+        // drive_caravans reads Res<Time>; a real headless server gets it from
+        // MinimalPlugins, but the bare test App needs it inserted manually.
+        app.init_resource::<Time>();
         app.world_mut().run_schedule(Startup);
         for _ in 0..5 {
             app.world_mut().run_schedule(FixedUpdate);
@@ -317,6 +545,15 @@ mod tests {
     }
 
     #[test]
+    fn town_has_buildings() {
+        let mut app = App::new();
+        app.add_plugins(SimPlugin);
+        app.world_mut().run_schedule(Startup);
+        let mut buildings = app.world_mut().query::<&Building>();
+        assert!(buildings.iter(app.world()).count() >= 10);
+    }
+
+    #[test]
     fn map_has_water() {
         let map = Map::default();
         assert!(map.tiles.iter().any(|t| t.is_water()));
@@ -329,7 +566,6 @@ mod tests {
         app.world_mut().run_schedule(Startup);
         app.world_mut().run_schedule(PostStartup);
         let map = app.world().resource::<Map>();
-        // The settlement sits at map centre; its footprint must be impassable.
         assert!(!map.is_walkable(MAP_W / 2, MAP_H / 2));
     }
 
@@ -344,6 +580,26 @@ mod tests {
         let map = world.resource::<Map>();
         for mover in leaders.iter(world) {
             assert!(map.walkable_at(mover.pos), "leader spawned on a blocked tile");
+        }
+    }
+
+    #[test]
+    fn caravans_spawn_with_walkable_endpoints() {
+        let mut app = App::new();
+        app.add_plugins(SimPlugin);
+        app.world_mut().run_schedule(Startup);
+        app.world_mut().run_schedule(PostStartup);
+
+        let mut caravans = app.world_mut().query::<&Caravan>();
+        let world = app.world();
+        let map = world.resource::<Map>();
+        let all: Vec<&Caravan> = caravans.iter(world).collect();
+        assert_eq!(all.len(), CARAVAN_COUNT);
+        for c in all {
+            assert!(map.walkable_at(c.source), "caravan source is blocked");
+            assert!(map.walkable_at(c.dest), "caravan dest is blocked");
+            assert_eq!(c.state, CaravanState::ToSource);
+            assert_eq!(c.cargo, 0);
         }
     }
 }

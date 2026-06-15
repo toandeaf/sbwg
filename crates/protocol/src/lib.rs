@@ -53,4 +53,6 @@ pub enum SimEvent {
     Ticked { tick: u64 },
     /// A player's focus moved.
     FocusChanged { player: PlayerId, at: TilePos },
+    /// A caravan dropped a load of water at a settlement.
+    WaterDelivered { amount: u32, stored: u32 },
 }
