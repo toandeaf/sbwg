@@ -1,10 +1,16 @@
 //! Caravan logistics — the first "action": haul water from claimed sources to
-//! the central store along A* routes. The assign → route → drive shape here is
-//! the template the wider action system will follow.
+//! the central store along A* routes.
+//!
+//! Assignment is **event-driven**: caravans re-plan whenever territory changes
+//! or a caravan is added. The planner gathers every claimed, reachable water
+//! source and partitions them across the caravans — one nearest-neighbour tour
+//! split into balanced, spatially-coherent slices — so all sources get covered
+//! (caravan A serves one slice, caravan B the next, …). Each caravan then cycles
+//! its slice, hauling each load back to the store.
 
 use bevy::prelude::*;
 use protocol::SimEvent;
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 use crate::entity::Settlement;
 use crate::map::{Map, Territory};
@@ -18,10 +24,15 @@ const UNLOAD_SECS: f32 = 1.5;
 /// Water storage held by a designated central building (DESIGN §13).
 #[derive(Component, Debug)]
 pub struct WaterStore {
-    /// Walkable drop-point beside the storage building (the route's store end).
+    /// Walkable drop-point beside the storage building (where caravans unload).
     pub pos: Vec2,
     pub stored: u32,
 }
+
+/// Set when a caravan is added, so the planner re-runs. Territory changes are
+/// picked up directly via change-detection in [`plan_caravans`].
+#[derive(Resource, Default)]
+struct ReplanCaravans(bool);
 
 /// What a caravan is doing right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,8 +44,8 @@ pub enum CaravanState {
     Unloading,
 }
 
-/// A real, authoritative goods-hauler: camels + people shuttling water from a
-/// claimed source to the store along a fixed A* route (DESIGN §13). Position is
+/// A real, authoritative goods-hauler. It cycles through an assigned `tour` of
+/// water draw-points, hauling each load back to `home` (the store). Position is
 /// interpolated by the client between sim ticks.
 #[derive(Component, Debug)]
 pub struct Caravan {
@@ -46,11 +57,14 @@ pub struct Caravan {
     pub cargo: u32,
     pub state: CaravanState,
     pub timer: f32,
-    /// The claimed water tile this caravan serves (`None` = idle/unassigned).
-    pub source: Option<IVec2>,
-    /// Route waypoints, store end (index 0) → source draw-point (last).
+    /// Store drop-point this caravan returns to.
+    pub home: Vec2,
+    /// Assigned water draw-points, in visit order.
+    pub tour: Vec<Vec2>,
+    /// Index of the source currently being serviced within `tour`.
+    pub tour_index: usize,
+    /// Current leg's A* waypoints (from where the caravan is to its target).
     pub route: Vec<Vec2>,
-    /// Index of the waypoint currently being travelled toward.
     pub wp: usize,
 }
 
@@ -66,76 +80,118 @@ impl Caravan {
             cargo: 0,
             state: CaravanState::Idle,
             timer: 0.0,
-            source: None,
+            home: pos,
+            tour: Vec::new(),
+            tour_index: 0,
             route: Vec::new(),
             wp: 0,
         }
     }
 }
 
-/// Assign idle caravans to claimed, unserviced water sources and route them.
-///
-/// 1. Work out which water sources are claimed (owned tiles).
-/// 2. List available (idle) caravans.
-/// 3. Assign each to the nearest unserviced claimed source.
-/// 4. Route it store → source with A* pathfinding.
-fn assign_caravans(
+/// Trip the re-plan when a caravan is added.
+fn flag_caravan_added(added: Query<(), Added<Caravan>>, mut flag: ResMut<ReplanCaravans>) {
+    if !added.is_empty() {
+        flag.0 = true;
+    }
+}
+
+/// Re-plan all caravans when territory changes or one was added (DESIGN §13).
+fn plan_caravans(
     map: Res<Map>,
     territory: Res<Territory>,
     settlements: Query<&Settlement>,
     stores: Query<&WaterStore>,
-    mut caravans: Query<&mut Caravan>,
+    mut flag: ResMut<ReplanCaravans>,
+    mut caravans: Query<(Entity, &mut Caravan)>,
 ) {
-    if !caravans.iter().any(|c| c.state == CaravanState::Idle) {
-        return; // nothing to assign
+    if !territory.is_changed() && !flag.0 {
+        return;
     }
+    flag.0 = false;
     let Ok(settlement) = settlements.single() else { return };
     let Ok(store) = stores.single() else { return };
     let owner = settlement.owner;
-    let store_tile = tile_of(store.pos);
+    let store_pos = store.pos;
+    let store_tile = tile_of(store_pos);
 
-    // 1. Claimed water sources = owned water tiles, nearest to the store first.
-    let mut claimed: Vec<IVec2> = map
-        .water_tiles()
-        .into_iter()
-        .map(tile_of)
-        .filter(|t| territory.owner_at(t.x, t.y) == Some(owner))
-        .collect();
-    claimed.sort_by_key(|t| (*t - store_tile).length_squared());
-
-    // Sources already being served by some caravan.
-    let mut serviced: HashSet<IVec2> = caravans.iter().filter_map(|c| c.source).collect();
-
-    for mut caravan in &mut caravans {
-        if caravan.state != CaravanState::Idle {
+    // Claimed, reachable water sources → their walkable draw-points.
+    let mut draws: Vec<Vec2> = Vec::new();
+    for water in map.water_tiles() {
+        let tile = tile_of(water);
+        if territory.owner_at(tile.x, tile.y) != Some(owner) {
             continue;
         }
-        for &tile in &claimed {
-            if serviced.contains(&tile) {
-                continue;
-            }
-            let draw = map.find_walkable_near(centre_of(tile), 1.0);
-            let Some(path) = find_path(&map, store_tile, tile_of(draw)) else { continue };
-            caravan.route = path.iter().map(|t| centre_of(*t)).collect();
-            caravan.pos = caravan.route[0];
-            caravan.prev = caravan.route[0];
-            caravan.source = Some(tile);
-            if caravan.route.len() < 2 {
-                caravan.state = CaravanState::Loading;
-                caravan.timer = LOAD_SECS;
-            } else {
-                caravan.state = CaravanState::ToSource;
-                caravan.wp = 1;
-            }
-            serviced.insert(tile);
-            break;
+        let draw = map.find_walkable_near(water, 1.0);
+        if find_path(&map, store_tile, tile_of(draw)).is_some() {
+            draws.push(draw);
         }
     }
+
+    // Partition the sources across the caravans, then hand each its slice.
+    let cars: Vec<Entity> = caravans.iter().map(|(e, _)| e).collect();
+    let plan = partition(&draws, store_pos, cars.len());
+    let mut tours: HashMap<Entity, Vec<Vec2>> = HashMap::new();
+    for (ci, entity) in cars.iter().enumerate() {
+        tours.insert(*entity, plan[ci].iter().map(|&i| draws[i]).collect());
+    }
+
+    for (entity, mut caravan) in &mut caravans {
+        let tour = tours.remove(&entity).unwrap_or_default();
+        caravan.home = store_pos;
+        caravan.cargo = 0;
+        caravan.tour = tour;
+        caravan.tour_index = 0;
+        if caravan.tour.is_empty() {
+            caravan.state = CaravanState::Idle;
+            caravan.route.clear();
+            caravan.wp = 0;
+        } else {
+            let goal = caravan.tour[0];
+            begin_leg(&mut caravan, &map, goal);
+            caravan.state = CaravanState::ToSource;
+        }
+    }
+}
+
+/// Order the draws into one nearest-neighbour tour from the store, then split it
+/// into `n` balanced, contiguous slices — one per caravan.
+fn partition(draws: &[Vec2], store: Vec2, n: usize) -> Vec<Vec<usize>> {
+    let mut chunks = vec![Vec::new(); n];
+    if n == 0 || draws.is_empty() {
+        return chunks;
+    }
+    let mut remaining: Vec<usize> = (0..draws.len()).collect();
+    let mut order = Vec::with_capacity(draws.len());
+    let mut cur = store;
+    while !remaining.is_empty() {
+        let k = (0..remaining.len())
+            .min_by(|&a, &b| {
+                draws[remaining[a]]
+                    .distance_squared(cur)
+                    .partial_cmp(&draws[remaining[b]].distance_squared(cur))
+                    .unwrap()
+            })
+            .unwrap();
+        let si = remaining.swap_remove(k);
+        order.push(si);
+        cur = draws[si];
+    }
+    let base = order.len() / n;
+    let extra = order.len() % n;
+    let mut idx = 0;
+    for (ci, chunk) in chunks.iter_mut().enumerate() {
+        let size = base + if ci < extra { 1 } else { 0 };
+        *chunk = order[idx..idx + size].to_vec();
+        idx += size;
+    }
+    chunks
 }
 
 /// Move each caravan along its route, switching legs at the ends (DESIGN §13).
 fn drive_caravans(
     time: Res<Time>,
+    map: Res<Map>,
     mut caravans: Query<&mut Caravan>,
     mut stores: Query<&mut WaterStore>,
     mut outbox: MessageWriter<OutgoingEvent>,
@@ -147,7 +203,7 @@ fn drive_caravans(
         match c.state {
             CaravanState::Idle => {}
             CaravanState::ToSource => {
-                if advance(&mut c, true, max_step) {
+                if follow_route(&mut c, max_step) {
                     c.state = CaravanState::Loading;
                     c.timer = LOAD_SECS;
                 }
@@ -156,12 +212,13 @@ fn drive_caravans(
                 c.timer -= dt;
                 if c.timer <= 0.0 {
                     c.cargo = c.capacity;
+                    let home = c.home;
+                    begin_leg(&mut c, &map, home);
                     c.state = CaravanState::ToStore;
-                    c.wp = c.route.len().saturating_sub(2);
                 }
             }
             CaravanState::ToStore => {
-                if advance(&mut c, false, max_step) {
+                if follow_route(&mut c, max_step) {
                     c.state = CaravanState::Unloading;
                     c.timer = UNLOAD_SECS;
                 }
@@ -178,18 +235,33 @@ fn drive_caravans(
                             stored: store.stored,
                         }));
                     }
-                    c.state = CaravanState::ToSource;
-                    c.wp = 1;
+                    if c.tour.is_empty() {
+                        c.state = CaravanState::Idle;
+                    } else {
+                        c.tour_index = (c.tour_index + 1) % c.tour.len();
+                        let goal = c.tour[c.tour_index];
+                        begin_leg(&mut c, &map, goal);
+                        c.state = CaravanState::ToSource;
+                    }
                 }
             }
         }
     }
 }
 
+/// Compute a fresh A* leg from the caravan's current position to `goal`.
+fn begin_leg(c: &mut Caravan, map: &Map, goal: Vec2) {
+    let start = tile_of(c.pos);
+    let goal_tile = tile_of(goal);
+    let path = find_path(map, start, goal_tile).unwrap_or_else(|| vec![start, goal_tile]);
+    c.route = path.iter().map(|t| centre_of(*t)).collect();
+    c.wp = if c.route.len() >= 2 { 1 } else { 0 };
+}
+
 /// Step the caravan toward `route[wp]`, advancing the index when reached. Returns
-/// true when the route end (in this direction) is hit. `forward` = toward source.
-fn advance(c: &mut Caravan, forward: bool, max_step: f32) -> bool {
-    if c.route.len() < 2 {
+/// true when the final waypoint is hit.
+fn follow_route(c: &mut Caravan, max_step: f32) -> bool {
+    if c.route.is_empty() {
         return true;
     }
     let target = c.route[c.wp];
@@ -200,17 +272,10 @@ fn advance(c: &mut Caravan, forward: bool, max_step: f32) -> bool {
         return false;
     }
     c.pos = target;
-    if forward {
-        if c.wp + 1 >= c.route.len() {
-            return true;
-        }
-        c.wp += 1;
-    } else {
-        if c.wp == 0 {
-            return true;
-        }
-        c.wp -= 1;
+    if c.wp + 1 >= c.route.len() {
+        return true;
     }
+    c.wp += 1;
     false
 }
 
@@ -222,11 +287,15 @@ fn centre_of(t: IVec2) -> Vec2 {
     Vec2::new(t.x as f32 + 0.5, t.y as f32 + 0.5)
 }
 
-/// Caravan assignment + route-following.
+/// Caravan planning (event-driven) + route-following.
 pub struct CaravanPlugin;
 
 impl Plugin for CaravanPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(FixedUpdate, (assign_caravans, drive_caravans).chain());
+        app.init_resource::<ReplanCaravans>()
+            .add_systems(
+                FixedUpdate,
+                (flag_caravan_added, plan_caravans, drive_caravans).chain(),
+            );
     }
 }

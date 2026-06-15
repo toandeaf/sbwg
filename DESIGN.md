@@ -428,9 +428,11 @@ tests green. Client renders a terrain map (sand/oasis/well — water as §13 res
 drawn as a **cosmetic swarm** (§17.4), and one authoritative **leader**
 drawn with tick-interpolation — both halves of §17.4 demonstrated. The sim owns a **tile passability
 grid** (buildings + water); leader and swarm both collide against it (tile-based, no physics engine).
-**Caravans** (real movers, camel-train visuals) are assigned to **claimed** water sources (owned
-tiles) and haul to a central **water store** building along **A\* routes** (§13 water logistics),
-running a state machine (idle → to-source → load → to-store → unload) and emitting delivery events.
+**Caravans** (real movers, camel-train visuals) haul water to a central **water store** building
+along **A\* routes** (§13). Assignment is **event-driven**: on a territory change or a caravan being
+added, a planner gathers all **claimed** (owned) water sources and partitions them across the
+caravans (one nearest-neighbour tour split into balanced slices), so all sources get covered; each
+caravan then cycles its slice (state machine: idle → to-source → load → to-store → unload).
 A **territory grid** (§8)
 claims each building's footprint + 2 tiles for its owner (hold **T** to light it up); the labour
 swarm is bound to its owner's territory, while leader/caravans roam freely. First **directive**:

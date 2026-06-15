@@ -150,7 +150,7 @@ mod tests {
         assert_eq!(all.len(), CARAVAN_COUNT);
         for c in all {
             assert_eq!(c.state, CaravanState::Idle);
-            assert!(c.source.is_none());
+            assert!(c.tour.is_empty());
         }
     }
 
@@ -189,5 +189,35 @@ mod tests {
         let assigned = caravans.iter(world).filter(|c| c.state != CaravanState::Idle).count();
         assert!(assigned >= 1, "claiming water should assign a caravan");
         assert!(caravans.iter(world).any(|c| c.route.len() >= 2), "expected a routed caravan");
+    }
+
+    #[test]
+    fn caravans_distribute_across_sources() {
+        let mut app = headless_app();
+        app.world_mut().run_schedule(Startup);
+        app.world_mut().run_schedule(PostStartup);
+
+        // Claim the two nearest water sources.
+        let centre = Vec2::new(MAP_W as f32 / 2.0, MAP_H as f32 / 2.0);
+        let waters = {
+            let map = app.world().resource::<Map>();
+            let mut w = map.water_tiles();
+            w.sort_by(|a, b| {
+                a.distance_squared(centre).partial_cmp(&b.distance_squared(centre)).unwrap()
+            });
+            w
+        };
+        for water in waters.iter().take(2) {
+            let tile = IVec2::new(water.x.floor() as i32, water.y.floor() as i32);
+            app.world_mut()
+                .resource_mut::<Territory>()
+                .claim_rect(TOWN_OWNER, tile - IVec2::ONE, tile + IVec2::ONE);
+        }
+
+        app.world_mut().run_schedule(FixedUpdate);
+        let mut caravans = app.world_mut().query::<&Caravan>();
+        let world = app.world();
+        let working = caravans.iter(world).filter(|c| c.state != CaravanState::Idle).count();
+        assert!(working >= 2, "two claimed sources should engage two caravans, got {working}");
     }
 }
