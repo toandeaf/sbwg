@@ -10,7 +10,7 @@
 //! That message seam is exactly where the network layer will later plug in.
 
 use bevy::prelude::*;
-use protocol::{PlayerCommand, SimEvent};
+use protocol::{PlayerCommand, SimEvent, Terrain};
 
 /// Simulation ticks per second (DESIGN §17.3: ~5–20 Hz strategic).
 pub const SIM_HZ: f64 = 10.0;
@@ -19,9 +19,17 @@ pub const SIM_HZ: f64 = 10.0;
 pub const MAP_W: i32 = 32;
 pub const MAP_H: i32 = 24;
 
-/// Placeholder "movers" the scaffold wanders around — proto-ants / real movers
-/// (DESIGN §17.4). Stand in for leaders/caravans/parties for now.
-const MOVER_COUNT: usize = 24;
+/// Starting population of the scaffold settlement. The client renders this many
+/// cosmetic swarm figures (DESIGN §17.4): the sim tracks the *number*, the
+/// client draws the *crowd*.
+pub const SETTLEMENT_POP: u32 = 60;
+
+/// Half-width (in tiles) of a building's blocking footprint.
+const BUILDING_FOOTPRINT_R: i32 = 1;
+
+/// How far the lone "leader" — a real, authoritative, interpolated mover (the
+/// other half of §17.4) — wanders from home.
+const LEADER_RADIUS: f32 = 4.0;
 
 // ---- Boundary messages -----------------------------------------------------
 
@@ -41,16 +49,79 @@ pub struct OutgoingEvent(pub SimEvent);
 #[derive(Resource, Default, Debug)]
 pub struct SimTick(pub u64);
 
-/// The tile grid extents.
+/// The authoritative tile map: extents, per-tile terrain, and a passability
+/// grid (DESIGN §6.2). `blocked` is the collision layer — buildings and water —
+/// shared by real movers (here) and the client's cosmetic swarm.
 #[derive(Resource, Debug)]
 pub struct Map {
     pub width: i32,
     pub height: i32,
+    pub tiles: Vec<Terrain>,
+    pub blocked: Vec<bool>,
+}
+
+impl Map {
+    /// Deterministic terrain: mostly sand with a scatter of oases and wells.
+    /// Water starts blocked; building footprints get stamped in later.
+    fn generate(width: i32, height: i32, seed: u64) -> Self {
+        let mut rng = SimRng(seed);
+        let mut tiles = vec![Terrain::Sand; (width * height) as usize];
+        for (kind, count) in [(Terrain::Oasis, 3usize), (Terrain::Well, 8usize)] {
+            for _ in 0..count {
+                let x = (rng.next_u64() % width as u64) as i32;
+                let y = (rng.next_u64() % height as u64) as i32;
+                let idx = (y * width + x) as usize;
+                if tiles[idx] == Terrain::Sand {
+                    tiles[idx] = kind;
+                }
+            }
+        }
+        let blocked = tiles.iter().map(|t| t.is_water()).collect();
+        Self { width, height, tiles, blocked }
+    }
+
+    pub fn terrain_at(&self, x: i32, y: i32) -> Terrain {
+        self.tiles[self.idx(x, y)]
+    }
+
+    pub fn in_bounds(&self, x: i32, y: i32) -> bool {
+        x >= 0 && y >= 0 && x < self.width && y < self.height
+    }
+
+    fn idx(&self, x: i32, y: i32) -> usize {
+        (y * self.width + x) as usize
+    }
+
+    /// True if a unit may stand on this tile (in-bounds and not blocked).
+    pub fn is_walkable(&self, x: i32, y: i32) -> bool {
+        self.in_bounds(x, y) && !self.blocked[self.idx(x, y)]
+    }
+
+    /// Walkability test for a continuous tile-space position.
+    pub fn walkable_at(&self, p: Vec2) -> bool {
+        self.is_walkable(p.x.floor() as i32, p.y.floor() as i32)
+    }
+
+    /// Spiral out from `centre` for the first walkable tile centre at least
+    /// `min_dist` tiles away. Used to place things outside obstacles.
+    pub fn find_walkable_near(&self, centre: Vec2, min_dist: f32) -> Vec2 {
+        let start = min_dist.max(0.0) as i32;
+        for ring in start..(start + 10) {
+            for k in 0..24 {
+                let a = k as f32 / 24.0 * std::f32::consts::TAU;
+                let p = centre + Vec2::new(a.cos(), a.sin()) * ring as f32;
+                if self.walkable_at(p) {
+                    return p;
+                }
+            }
+        }
+        centre
+    }
 }
 
 impl Default for Map {
     fn default() -> Self {
-        Self { width: MAP_W, height: MAP_H }
+        Self::generate(MAP_W, MAP_H, 0x00C0_FFEE_1234_5678)
     }
 }
 
@@ -85,10 +156,22 @@ impl SimRng {
 
 // ---- Components -------------------------------------------------------------
 
-/// A simulated agent the client draws as a coloured square. Position is the
-/// sim's truth, in continuous tile-space (not cell-snapped — DESIGN §6.2).
+/// A place where people live. Its `population` is the cohort the client draws as
+/// a cosmetic swarm (DESIGN §14/§17.4).
+#[derive(Component, Debug)]
+pub struct Settlement {
+    /// Continuous tile-space position (DESIGN §6.2).
+    pub pos: Vec2,
+    pub population: u32,
+}
+
+/// A real, authoritative agent the client draws as a single interpolated square
+/// (stands in for a leader/caravan — DESIGN §17.4). `prev` holds last tick's
+/// position so the client can interpolate between 10 Hz steps.
 #[derive(Component, Debug, Clone, Copy)]
 pub struct Mover {
+    pub home: Vec2,
+    pub prev: Vec2,
     pub pos: Vec2,
     pub vel: Vec2,
 }
@@ -104,23 +187,45 @@ impl Plugin for SimPlugin {
             .init_resource::<SimRng>()
             .add_message::<IncomingCommand>()
             .add_message::<OutgoingEvent>()
-            .add_systems(Startup, spawn_movers)
+            .add_systems(Startup, spawn_settlement)
+            // After settlements exist: stamp their footprints into the collision
+            // grid, then place the leader on a walkable tile outside them.
+            .add_systems(PostStartup, (stamp_obstacles, spawn_leader).chain())
             // One ordered chain per tick: ingest intent, step the world, count.
             .add_systems(
                 FixedUpdate,
-                (apply_commands, wander_movers, advance_tick).chain(),
+                (apply_commands, wander_leader, advance_tick).chain(),
             );
     }
 }
 
-fn spawn_movers(mut commands: Commands, map: Res<Map>, mut rng: ResMut<SimRng>) {
-    for _ in 0..MOVER_COUNT {
-        let pos = Vec2::new(
-            (rng.signed_unit() * 0.5 + 0.5) * map.width as f32,
-            (rng.signed_unit() * 0.5 + 0.5) * map.height as f32,
-        );
-        commands.spawn(Mover { pos, vel: Vec2::ZERO });
+fn spawn_settlement(mut commands: Commands, map: Res<Map>) {
+    let pos = Vec2::new(map.width as f32 / 2.0, map.height as f32 / 2.0);
+    commands.spawn(Settlement { pos, population: SETTLEMENT_POP });
+}
+
+/// Bake building footprints into the map's collision grid.
+fn stamp_obstacles(mut map: ResMut<Map>, settlements: Query<&Settlement>) {
+    for settlement in &settlements {
+        let cx = settlement.pos.x.floor() as i32;
+        let cy = settlement.pos.y.floor() as i32;
+        for dy in -BUILDING_FOOTPRINT_R..=BUILDING_FOOTPRINT_R {
+            for dx in -BUILDING_FOOTPRINT_R..=BUILDING_FOOTPRINT_R {
+                let (x, y) = (cx + dx, cy + dy);
+                if map.in_bounds(x, y) {
+                    let idx = map.idx(x, y);
+                    map.blocked[idx] = true;
+                }
+            }
+        }
     }
+}
+
+fn spawn_leader(mut commands: Commands, map: Res<Map>, settlements: Query<&Settlement>) {
+    let Ok(settlement) = settlements.single() else { return };
+    // Start a few tiles from the settlement, on a walkable tile.
+    let home = map.find_walkable_near(settlement.pos, 3.0);
+    commands.spawn(Mover { home, prev: home, pos: home, vel: Vec2::ZERO });
 }
 
 /// Drain inbound commands, mutate state, and publish a state-change event.
@@ -141,23 +246,38 @@ fn apply_commands(
     }
 }
 
-/// Random-walk the movers within the map bounds (placeholder motion).
-fn wander_movers(map: Res<Map>, mut rng: ResMut<SimRng>, mut movers: Query<&mut Mover>) {
-    let (w, h) = (map.width as f32, map.height as f32);
+/// Random-walk the leader, sliding along blocked tiles and staying near home.
+fn wander_leader(map: Res<Map>, mut rng: ResMut<SimRng>, mut movers: Query<&mut Mover>) {
     for mut m in &mut movers {
-        m.vel.x += rng.signed_unit() * 0.05;
-        m.vel.y += rng.signed_unit() * 0.05;
-        m.vel = m.vel.clamp_length_max(0.3);
-        let mut p = m.pos + m.vel;
-        if p.x < 0.0 || p.x > w {
+        m.prev = m.pos; // snapshot for client interpolation
+        m.vel.x += rng.signed_unit() * 0.06;
+        m.vel.y += rng.signed_unit() * 0.06;
+        m.vel = m.vel.clamp_length_max(0.5);
+
+        // Axis-separated move so we slide along walls instead of sticking.
+        let mut np = m.pos;
+        let try_x = Vec2::new(m.pos.x + m.vel.x, m.pos.y);
+        if map.walkable_at(try_x) {
+            np.x = try_x.x;
+        } else {
             m.vel.x = -m.vel.x;
-            p.x = p.x.clamp(0.0, w);
         }
-        if p.y < 0.0 || p.y > h {
+        let try_y = Vec2::new(np.x, m.pos.y + m.vel.y);
+        if map.walkable_at(try_y) {
+            np.y = try_y.y;
+        } else {
             m.vel.y = -m.vel.y;
-            p.y = p.y.clamp(0.0, h);
         }
-        m.pos = p;
+
+        // Keep within home radius.
+        let off = np - m.home;
+        if off.length() > LEADER_RADIUS {
+            let n = off.normalize_or_zero();
+            np = m.home + n * LEADER_RADIUS;
+            let v = m.vel;
+            m.vel = v - 2.0 * v.dot(n) * n;
+        }
+        m.pos = np;
     }
 }
 
@@ -183,11 +303,47 @@ mod tests {
     }
 
     #[test]
-    fn movers_spawn() {
+    fn settlement_and_leader_spawn() {
         let mut app = App::new();
         app.add_plugins(SimPlugin);
         app.world_mut().run_schedule(Startup);
-        let mut q = app.world_mut().query::<&Mover>();
-        assert_eq!(q.iter(app.world()).count(), MOVER_COUNT);
+        app.world_mut().run_schedule(PostStartup);
+
+        let mut settlements = app.world_mut().query::<&Settlement>();
+        assert_eq!(settlements.iter(app.world()).count(), 1);
+
+        let mut leaders = app.world_mut().query::<&Mover>();
+        assert_eq!(leaders.iter(app.world()).count(), 1);
+    }
+
+    #[test]
+    fn map_has_water() {
+        let map = Map::default();
+        assert!(map.tiles.iter().any(|t| t.is_water()));
+    }
+
+    #[test]
+    fn buildings_block_tiles() {
+        let mut app = App::new();
+        app.add_plugins(SimPlugin);
+        app.world_mut().run_schedule(Startup);
+        app.world_mut().run_schedule(PostStartup);
+        let map = app.world().resource::<Map>();
+        // The settlement sits at map centre; its footprint must be impassable.
+        assert!(!map.is_walkable(MAP_W / 2, MAP_H / 2));
+    }
+
+    #[test]
+    fn leader_starts_walkable() {
+        let mut app = App::new();
+        app.add_plugins(SimPlugin);
+        app.world_mut().run_schedule(Startup);
+        app.world_mut().run_schedule(PostStartup);
+        let mut leaders = app.world_mut().query::<&Mover>();
+        let world = app.world();
+        let map = world.resource::<Map>();
+        for mover in leaders.iter(world) {
+            assert!(map.walkable_at(mover.pos), "leader spawned on a blocked tile");
+        }
     }
 }

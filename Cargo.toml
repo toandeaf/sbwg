@@ -11,3 +11,12 @@ protocol = { path = "crates/protocol" }
 sim = { path = "crates/sim" }
 serde = { version = "1", features = ["derive"] }
 bevy = "0.18"
+
+# Bevy is rough in a plain debug build. Optimise all dependencies (incl. Bevy)
+# at opt-level 3 while keeping our own crates at 1, so the game runs smoothly in
+# dev but our edits still compile fast. Standard Bevy dev-profile guidance.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

@@ -23,6 +23,22 @@ impl TilePos {
     }
 }
 
+/// Terrain of a tile (DESIGN §6.2/§13). Water-bearing tiles (oasis/well) are the
+/// position-bound primary resource.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Terrain {
+    Sand,
+    Oasis,
+    Well,
+}
+
+impl Terrain {
+    /// Does this tile provide water?
+    pub fn is_water(self) -> bool {
+        matches!(self, Terrain::Oasis | Terrain::Well)
+    }
+}
+
 /// Client → sim. Player intent. Stub set; grows with the design.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum PlayerCommand {
