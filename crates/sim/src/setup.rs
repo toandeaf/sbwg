@@ -27,7 +27,9 @@ const STARTING_WATER: u32 = 60;
 
 // Caravan spawn config (DESIGN §13: water logistics).
 pub(crate) const CARAVAN_COUNT: usize = 3;
-const CARAVAN_CAPACITY: u32 = 50; // units of water per trip
+// Deliberately modest so a single source can't sustain the starting pop —
+// the player must claim more to grow (tune up later for balance).
+const CARAVAN_CAPACITY: u32 = 30; // units of water per trip
 const CARAVAN_CAMELS: u32 = 6;
 const CARAVAN_PEOPLE: u32 = 4;
 

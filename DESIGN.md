@@ -441,8 +441,9 @@ hauling from it. (Caravans start idle until you claim something to haul.) **Popu
 water-gated (§13): the settlement drinks from the store each second and grows when supply beats
 demand, declines (emigration) when it runs dry, capped by a placeholder housing ceiling — so the
 claim → caravan → water chain now drives the swarm's size up and down. A top-left **HUD** shows
-population + stored water. The map seeds **one water source inside the city** (served from the
-start) and **three on the outskirts** (claim them to grow further).
+population, stored water, and active/total caravans. The map seeds **one water source inside the
+city** (served from the start) and **three on the outskirts**; caravan capacity is tuned low so the
+in-city source alone can't sustain the starting pop — you must claim outskirts to grow.
 
 **Threat #1 is scope.** Cross-cultural infection, espionage variety, narcotics ops, full
 faction trees, all phases — these are *later*. Build **breadth-last**.
