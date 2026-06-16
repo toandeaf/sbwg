@@ -425,7 +425,8 @@ The "ants at a zoom-out" look (dense, numerous — *not* AoE's sparse-symbolic c
 **Status:** workspace scaffolded (sim/client/protocol), Bevy 0.18.1, message-decoupled, builds &
 tests green. Client renders a terrain map (sand/oasis/well — water as §13 resource), a settlement
 (a clustered town of ~10–15 multi-tile **buildings** with street gaps) whose population cohort is
-drawn as a **cosmetic swarm** (§17.4), and one authoritative **leader**
+drawn as a **cosmetic swarm** (§17.4) — now **animated walkers** (4-direction walk cycle from
+`assets/walk.png`) that face their direction of travel — and one authoritative **leader**
 drawn with tick-interpolation — both halves of §17.4 demonstrated. The sim owns a **tile passability
 grid** (buildings + water); leader and swarm both collide against it (tile-based, no physics engine).
 **Caravans** (real movers, camel-train visuals) haul water to a central **water store** building
@@ -437,7 +438,11 @@ A **territory grid** (§8)
 claims each building's footprint + 2 tiles for its owner (hold **T** to light it up); the labour
 swarm is bound to its owner's territory, while leader/caravans roam freely. First **directive**:
 hold **C** and click-drag to **claim land** — claiming a water source puts idle caravans to work
-hauling from it. (Caravans start idle until you claim something to haul.) **Population** is
+hauling from it. (Caravans start idle until you claim something to haul.) Claiming is bounded by
+**manpower** (§8): holding frontier land beyond the settled core costs garrison drawn from
+population, scaled by distance from the seat — the claim preview turns **red** when you lack the men,
+and the HUD shows `Garrison: used/capacity`. So population → manpower → how far you can claim, while
+claimed water → population: every link in the loop is bounded. **Population** is
 water-gated (§13): the settlement drinks from the store each second and grows when supply beats
 demand, declines (emigration) when it runs dry, capped by a placeholder housing ceiling — so the
 claim → caravan → water chain now drives the swarm's size up and down. A top-left **HUD** shows

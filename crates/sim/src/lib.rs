@@ -19,6 +19,7 @@ use bevy::prelude::*;
 mod caravan;
 mod entity;
 mod map;
+pub mod manpower;
 mod messages;
 mod path;
 mod population;

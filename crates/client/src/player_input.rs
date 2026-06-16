@@ -2,7 +2,7 @@
 
 use bevy::prelude::*;
 use protocol::{PlayerCommand, PlayerId, TilePos};
-use sim::{IncomingCommand, Map};
+use sim::{manpower, IncomingCommand, Map, Settlement, Territory};
 
 use crate::{tile_to_world, TILE_PX};
 
@@ -80,6 +80,8 @@ fn claim_land(
     windows: Query<&Window>,
     cameras: Query<(&Camera, &GlobalTransform)>,
     map: Res<Map>,
+    territory: Res<Territory>,
+    settlements: Query<&Settlement>,
     mut drag: ResMut<ClaimDrag>,
     mut outbox: MessageWriter<IncomingCommand>,
     mut preview: Query<(&mut Sprite, &mut Transform, &mut Visibility), With<ClaimPreview>>,
@@ -98,14 +100,23 @@ fn claim_land(
         drag.start = cursor;
     }
 
-    // Live preview of the selection rectangle.
+    // Live preview of the selection rectangle — green if we can hold it, red if not.
     if let (Some(start), Some(end)) = (drag.start, cursor) {
         let (min, max) = (start.min(end), start.max(end));
+        let affordable = settlements
+            .iter()
+            .find(|s| s.owner == ME)
+            .is_none_or(|s| manpower::can_claim(&territory, ME, s.pos, s.population, min, max));
         if let Ok((mut sprite, mut transform, mut vis)) = preview.single_mut() {
             let w = (max.x - min.x + 1) as f32;
             let h = (max.y - min.y + 1) as f32;
             let centre = Vec2::new((min.x + max.x) as f32 / 2.0 + 0.5, (min.y + max.y) as f32 / 2.0 + 0.5);
             sprite.custom_size = Some(Vec2::new(w * TILE_PX, h * TILE_PX));
+            sprite.color = if affordable {
+                Color::srgba(0.3, 0.9, 0.4, 0.25)
+            } else {
+                Color::srgba(0.9, 0.2, 0.2, 0.35)
+            };
             transform.translation = tile_to_world(centre, &map).extend(3.0);
             *vis = Visibility::Visible;
         }

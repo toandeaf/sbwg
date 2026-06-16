@@ -1,7 +1,7 @@
 //! A minimal on-screen HUD: the settlement's population and stored water.
 
 use bevy::prelude::*;
-use sim::{Caravan, CaravanState, Settlement, WaterStore};
+use sim::{manpower, Caravan, CaravanState, Settlement, Territory, WaterStore};
 
 /// Top-left readout of population + water.
 pub struct HudPlugin;
@@ -41,15 +41,20 @@ fn update_hud(
     settlements: Query<&Settlement>,
     stores: Query<&WaterStore>,
     caravans: Query<&Caravan>,
+    territory: Res<Territory>,
     mut hud: Query<&mut Text, With<HudText>>,
 ) {
-    let population = settlements.iter().next().map(|s| s.population).unwrap_or(0);
+    let settlement = settlements.iter().next();
+    let population = settlement.map(|s| s.population).unwrap_or(0);
     let water = stores.iter().next().map(|s| s.stored).unwrap_or(0);
     let total = caravans.iter().count();
     let active = caravans.iter().filter(|c| c.state != CaravanState::Idle).count();
+    let (used, cap) = settlement
+        .map(|s| (manpower::used(&territory, s.owner, s.pos), manpower::capacity(s.population)))
+        .unwrap_or((0.0, 0.0));
     if let Ok(mut text) = hud.single_mut() {
         *text = Text::new(format!(
-            "Population: {population}\nWater: {water}\nCaravans: {active}/{total} active"
+            "Population: {population}\nWater: {water}\nCaravans: {active}/{total} active\nGarrison: {used:.0}/{cap:.0}"
         ));
     }
 }

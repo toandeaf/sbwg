@@ -21,7 +21,7 @@ pub struct EntityViewPlugin;
 
 impl Plugin for EntityViewPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
+        app.add_systems(Startup, load_swarm_sprite).add_systems(
             Update,
             (
                 attach_leader_sprite,
@@ -106,6 +106,45 @@ struct SwarmDot {
     owner: PlayerId,
 }
 
+/// Shared handles for the population walk sprite-sheet (4 dirs × 9 frames).
+#[derive(Resource)]
+struct SwarmSprite {
+    image: Handle<Image>,
+    layout: Handle<TextureAtlasLayout>,
+}
+
+const WALK_COLS: u32 = 9;
+const WALK_ROWS: u32 = 4;
+const WALK_FRAME: u32 = 60; // px per frame in walk.png (540×240)
+const WALK_FPS: f32 = 8.0;
+const SWARM_SPRITE_SIZE: f32 = TILE_PX * 1.3;
+
+/// Load walk.png and build a 9×4 texture-atlas layout once at startup.
+fn load_swarm_sprite(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    mut layouts: ResMut<Assets<TextureAtlasLayout>>,
+) {
+    let image = asset_server.load("walk.png");
+    let layout =
+        TextureAtlasLayout::from_grid(UVec2::splat(WALK_FRAME), WALK_COLS, WALK_ROWS, None, None);
+    commands.insert_resource(SwarmSprite { image, layout: layouts.add(layout) });
+}
+
+/// Sprite-sheet row for a heading: 0 down, 1 left, 2 right, 3 up.
+fn direction_row(vel: Vec2) -> usize {
+    if vel.length_squared() < 1e-4 {
+        return 0; // idle → face the camera
+    }
+    if vel.x.abs() > vel.y.abs() {
+        if vel.x < 0.0 { 1 } else { 2 }
+    } else if vel.y < 0.0 {
+        0
+    } else {
+        3
+    }
+}
+
 /// Cheap integer hash for deterministic, dependency-free dot steering.
 fn hash32(mut x: u32) -> u32 {
     x ^= x >> 16;
@@ -122,6 +161,7 @@ fn reconcile_swarm(
     mut commands: Commands,
     map: Res<Map>,
     territory: Res<Territory>,
+    swarm: Res<SwarmSprite>,
     settlements: Query<&Settlement>,
     dots: Query<Entity, With<SwarmDot>>,
 ) {
@@ -147,6 +187,11 @@ fn reconcile_swarm(
             // Even stride across the territory so they start dispersed.
             let start = spots[(i * spots.len() / target.max(1)) % spots.len()];
             let world = tile_to_world(start, &map);
+            let mut sprite = Sprite::from_atlas_image(
+                swarm.image.clone(),
+                TextureAtlas { layout: swarm.layout.clone(), index: 0 },
+            );
+            sprite.custom_size = Some(Vec2::splat(SWARM_SPRITE_SIZE));
             commands.spawn((
                 SwarmDot {
                     pos: start,
@@ -154,7 +199,7 @@ fn reconcile_swarm(
                     seed: (i as u32).wrapping_mul(2_654_435_761) | 1,
                     owner: settlement.owner,
                 },
-                Sprite::from_color(Color::srgb(0.22, 0.17, 0.13), Vec2::splat(TILE_PX * 0.3)),
+                sprite,
                 Transform::from_translation(world.extend(1.0)),
             ));
         }
@@ -171,11 +216,11 @@ fn animate_swarm(
     time: Res<Time>,
     map: Res<Map>,
     territory: Res<Territory>,
-    mut dots: Query<(&mut SwarmDot, &mut Transform)>,
+    mut dots: Query<(&mut SwarmDot, &mut Sprite, &mut Transform)>,
 ) {
     let t = time.elapsed_secs();
     let dt = time.delta_secs();
-    for (mut dot, mut transform) in &mut dots {
+    for (mut dot, mut sprite, mut transform) in &mut dots {
         // Slowly-changing random heading; they roam freely across the territory.
         let bucket = (t * 0.5) as u32;
         let angle = hash32(dot.seed ^ bucket) as f32 / u32::MAX as f32 * std::f32::consts::TAU;
@@ -204,6 +249,12 @@ fn animate_swarm(
         let world = tile_to_world(np, &map);
         transform.translation.x = world.x;
         transform.translation.y = world.y;
+
+        // Walk-cycle frame + face the direction of travel.
+        let frame = ((t * WALK_FPS) as usize).wrapping_add(dot.seed as usize) % WALK_COLS as usize;
+        if let Some(atlas) = sprite.texture_atlas.as_mut() {
+            atlas.index = direction_row(dot.vel) * WALK_COLS as usize + frame;
+        }
     }
 }
 

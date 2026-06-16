@@ -7,6 +7,7 @@
 use bevy::prelude::*;
 use protocol::{PlayerCommand, PlayerId, SimEvent};
 
+use crate::manpower;
 use crate::map::{Map, SimRng, SimTick, Territory};
 use crate::messages::{IncomingCommand, OutgoingEvent};
 
@@ -68,6 +69,7 @@ fn apply_commands(
     mut inbox: MessageReader<IncomingCommand>,
     mut outbox: MessageWriter<OutgoingEvent>,
     mut territory: ResMut<Territory>,
+    settlements: Query<&Settlement>,
 ) {
     for IncomingCommand(cmd) in inbox.read() {
         match cmd {
@@ -78,11 +80,21 @@ fn apply_commands(
                 }));
             }
             PlayerCommand::ClaimArea { player, min, max } => {
-                territory.claim_rect(
+                let Some(settlement) = settlements.iter().find(|s| s.owner == *player) else {
+                    continue;
+                };
+                let (min, max) = (IVec2::new(min.x, min.y), IVec2::new(max.x, max.y));
+                // Only claim what we have the manpower to hold (DESIGN §8).
+                if manpower::can_claim(
+                    &territory,
                     *player,
-                    IVec2::new(min.x, min.y),
-                    IVec2::new(max.x, max.y),
-                );
+                    settlement.pos,
+                    settlement.population,
+                    min,
+                    max,
+                ) {
+                    territory.claim_rect(*player, min, max);
+                }
             }
         }
     }
