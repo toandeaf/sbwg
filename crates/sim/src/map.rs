@@ -5,8 +5,15 @@ use bevy::prelude::*;
 use protocol::{PlayerId, Terrain};
 
 /// Logical size of the scaffold map, in tiles (DESIGN §6.2).
-pub const MAP_W: i32 = 32;
-pub const MAP_H: i32 = 24;
+pub const MAP_W: i32 = 96;
+pub const MAP_H: i32 = 64;
+
+// Procedural terrain tuning (deterministic).
+const TERRAIN_SEED: u64 = 0xA17C_E5ED_1234_5678;
+const CLEAR_RADIUS: f32 = 12.0; // keep the town's heart free of mountains/rivers
+const MOUNTAIN_CLUSTERS: usize = 6;
+const MOUNTAIN_WALK: usize = 40; // tiles grown per cluster
+const RIVER_COUNT: usize = 2;
 
 /// Monotonic tick counter for the authoritative sim.
 #[derive(Resource, Default, Debug)]
@@ -29,14 +36,46 @@ impl Map {
     /// footprints get stamped in later.
     fn generate(width: i32, height: i32) -> Self {
         let mut tiles = vec![Terrain::Sand; (width * height) as usize];
+        let mut rng = SimRng(TERRAIN_SEED);
         let cx = width / 2;
         let cy = height / 2;
+        let centre = Vec2::new(cx as f32, cy as f32);
+        let in_clear =
+            |x: i32, y: i32| Vec2::new(x as f32 + 0.5, y as f32 + 0.5).distance(centre) <= CLEAR_RADIUS;
 
-        // One source inside the city.
+        // Mountain clusters, grown by random walk and kept away from the town.
+        for _ in 0..MOUNTAIN_CLUSTERS {
+            let (mut x, mut y) = (cx, cy);
+            for _ in 0..20 {
+                x = (rng.next_u64() % width as u64) as i32;
+                y = (rng.next_u64() % height as u64) as i32;
+                if !in_clear(x, y) {
+                    break;
+                }
+            }
+            for _ in 0..MOUNTAIN_WALK {
+                if !in_clear(x, y) {
+                    set_terrain(&mut tiles, width, height, x, y, Terrain::Mountain);
+                }
+                x = (x + (rng.next_u64() % 3) as i32 - 1).clamp(0, width - 1);
+                y = (y + (rng.next_u64() % 3) as i32 - 1).clamp(0, height - 1);
+            }
+        }
+
+        // Meandering rivers top-to-bottom, leaving a gap through the town.
+        for _ in 0..RIVER_COUNT {
+            let mut x = (rng.next_u64() % width as u64) as i32;
+            for y in 0..height {
+                if !in_clear(x, y) {
+                    set_terrain(&mut tiles, width, height, x, y, Terrain::River);
+                }
+                x = (x + (rng.next_u64() % 3) as i32 - 1).clamp(0, width - 1);
+            }
+        }
+
+        // Water sources last so they survive overlap: one inside, three outskirts.
         set_terrain(&mut tiles, width, height, cx + 3, cy + 2, Terrain::Oasis);
-
-        // Three sources out on the outskirts, spread around.
-        let outer = width.min(height) as f32 * 0.45;
+        let outer = width.min(height) as f32 * 0.35;
         for k in 0..3 {
             let a = std::f32::consts::TAU * (k as f32 / 3.0) + 0.5;
             let x = (cx as f32 + a.cos() * outer).round() as i32;
@@ -51,7 +90,7 @@ impl Map {
             );
         }
 
-        let blocked = tiles.iter().map(|t| t.is_water()).collect();
+        let blocked = tiles.iter().map(|t| t.blocks()).collect();
         Self { width, height, tiles, blocked }
     }
 

@@ -110,18 +110,12 @@ mod tests {
     #[test]
     fn path_connects_walkable_tiles() {
         let map = Map::default();
-        let mut start = None;
-        let mut goal = None;
-        for y in 0..map.height {
-            for x in 0..map.width {
-                if map.is_walkable(x, y) {
-                    let t = IVec2::new(x, y);
-                    start.get_or_insert(t);
-                    goal = Some(t);
-                }
-            }
-        }
-        let (start, goal) = (start.unwrap(), goal.unwrap());
+        // Two walkable tiles near the (clear) town centre — guaranteed connected.
+        let centre = Vec2::new(map.width as f32 / 2.0, map.height as f32 / 2.0);
+        let near = map.find_walkable_near(centre, 1.0);
+        let far = map.find_walkable_near(centre, 6.0);
+        let start = IVec2::new(near.x.floor() as i32, near.y.floor() as i32);
+        let goal = IVec2::new(far.x.floor() as i32, far.y.floor() as i32);
         let path = find_path(&map, start, goal).expect("expected a path");
         assert_eq!(*path.first().unwrap(), start);
         assert_eq!(*path.last().unwrap(), goal);

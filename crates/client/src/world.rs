@@ -29,6 +29,8 @@ fn spawn_tile_grid(mut commands: Commands, map: Res<Map>) {
                 Terrain::Sand => (0.82, 0.70, 0.47),
                 Terrain::Oasis => (0.20, 0.55, 0.45),
                 Terrain::Well => (0.30, 0.52, 0.72),
+                Terrain::Mountain => (0.42, 0.40, 0.38),
+                Terrain::River => (0.25, 0.45, 0.78),
             };
             // a touch of per-tile shade so the grid reads as texture, not stripes
             let shade = ((x * 7 + y * 13).rem_euclid(5)) as f32 * 0.015;
@@ -70,15 +72,24 @@ fn spawn_territory_overlay(mut commands: Commands, map: Res<Map>) {
 fn update_territory_overlay(
     keys: Res<ButtonInput<KeyCode>>,
     territory: Res<Territory>,
+    mut last_show: Local<bool>,
     mut overlays: Query<(&TerritoryOverlay, &mut Visibility)>,
 ) {
     let show = keys.pressed(KeyCode::KeyT);
+    // Only re-sweep on a toggle or a territory change — cheap on a big map.
+    if show == *last_show && !territory.is_changed() {
+        return;
+    }
+    *last_show = show;
     for (overlay, mut visibility) in &mut overlays {
-        *visibility = if show && territory.owner_at(overlay.tile.x, overlay.tile.y).is_some() {
+        let target = if show && territory.owner_at(overlay.tile.x, overlay.tile.y).is_some() {
             Visibility::Visible
         } else {
             Visibility::Hidden
         };
+        if *visibility != target {
+            *visibility = target;
+        }
     }
 }
 

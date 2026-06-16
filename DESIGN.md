@@ -423,7 +423,9 @@ The "ants at a zoom-out" look (dense, numerous — *not* AoE's sparse-symbolic c
 ## 18. Scope & roadmap
 
 **Status:** workspace scaffolded (sim/client/protocol), Bevy 0.18.1, message-decoupled, builds &
-tests green. Client renders a terrain map (sand/oasis/well — water as §13 resource), a settlement
+tests green. Client renders a large (96×64) procedurally-generated terrain map — sand, oasis/well
+(water, §13), and impassable **mountains** and **rivers** (random-walk clusters / meandering lines,
+with the town's heart kept clear) — a settlement
 (a clustered town of ~10–15 multi-tile **buildings** with street gaps) whose population cohort is
 drawn as a **cosmetic swarm** (§17.4) — now **animated walkers** (4-direction walk cycle from
 `assets/walk.png`) that face their direction of travel — and one authoritative **leader**

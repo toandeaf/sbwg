@@ -30,12 +30,19 @@ pub enum Terrain {
     Sand,
     Oasis,
     Well,
+    Mountain,
+    River,
 }
 
 impl Terrain {
     /// Does this tile provide water?
     pub fn is_water(self) -> bool {
         matches!(self, Terrain::Oasis | Terrain::Well)
+    }
+
+    /// Is this tile impassable to movement? (Everything but open sand.)
+    pub fn blocks(self) -> bool {
+        !matches!(self, Terrain::Sand)
     }
 }
 
