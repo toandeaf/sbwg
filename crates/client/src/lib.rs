@@ -9,6 +9,7 @@ use bevy::prelude::*;
 use sim::Map;
 
 mod entities;
+mod hud;
 mod player_input;
 mod world;
 
@@ -32,6 +33,7 @@ impl Plugin for ClientPlugin {
             world::WorldViewPlugin,
             entities::EntityViewPlugin,
             player_input::PlayerInputPlugin,
+            hud::HudPlugin,
         ));
     }
 }

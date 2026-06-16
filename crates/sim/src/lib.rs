@@ -21,6 +21,7 @@ mod entity;
 mod map;
 mod messages;
 mod path;
+mod population;
 mod setup;
 
 pub use caravan::{Caravan, CaravanState, WaterStore};
@@ -40,6 +41,7 @@ impl Plugin for SimPlugin {
             map::MapPlugin,
             entity::EntityPlugin,
             caravan::CaravanPlugin,
+            population::PopulationPlugin,
             setup::SetupPlugin,
         ));
     }
@@ -50,6 +52,30 @@ mod tests {
     use super::*;
     use crate::setup::{CARAVAN_COUNT, TOWN_OWNER};
     use bevy::prelude::*;
+    use std::time::Duration;
+
+    fn population_of(app: &mut App) -> u32 {
+        let mut q = app.world_mut().query::<&Settlement>();
+        q.iter(app.world()).next().map(|s| s.population).unwrap_or(0)
+    }
+
+    /// Minimal app exercising only the population rule (no caravans/territory).
+    fn pop_test_app(population: u32, water: u32) -> App {
+        let mut app = App::new();
+        app.init_resource::<Time>();
+        app.add_message::<OutgoingEvent>();
+        app.add_plugins(crate::population::PopulationPlugin);
+        app.world_mut().spawn(Settlement { owner: TOWN_OWNER, pos: Vec2::ZERO, population });
+        app.world_mut().spawn(WaterStore { pos: Vec2::ZERO, stored: water });
+        app
+    }
+
+    fn run_seconds(app: &mut App, n: u32) {
+        for _ in 0..n {
+            app.world_mut().resource_mut::<Time>().advance_by(Duration::from_secs(1));
+            app.world_mut().run_schedule(FixedUpdate);
+        }
+    }
 
     /// Build a sim, run startup, and (optionally) a few ticks. Time is inserted
     /// because the bare test App lacks the MinimalPlugins a server would add.
@@ -219,5 +245,30 @@ mod tests {
         let world = app.world();
         let working = caravans.iter(world).filter(|c| c.state != CaravanState::Idle).count();
         assert!(working >= 2, "two claimed sources should engage two caravans, got {working}");
+    }
+
+    #[test]
+    fn population_declines_without_water() {
+        let mut app = pop_test_app(60, 30); // small buffer, no inflow
+        run_seconds(&mut app, 40);
+        let after = population_of(&mut app);
+        assert!(after < 60, "population should decline once the store runs dry (-> {after})");
+    }
+
+    #[test]
+    fn population_grows_with_surplus_water() {
+        let mut app = pop_test_app(60, 0);
+        for _ in 0..40 {
+            {
+                let mut q = app.world_mut().query::<&mut WaterStore>();
+                let world = app.world_mut();
+                for mut store in q.iter_mut(world) {
+                    store.stored += 1000; // strong sustained inflow
+                }
+            }
+            run_seconds(&mut app, 1);
+        }
+        let after = population_of(&mut app);
+        assert!(after > 60, "population should grow with surplus water (-> {after})");
     }
 }

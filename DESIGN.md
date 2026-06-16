@@ -437,7 +437,12 @@ A **territory grid** (§8)
 claims each building's footprint + 2 tiles for its owner (hold **T** to light it up); the labour
 swarm is bound to its owner's territory, while leader/caravans roam freely. First **directive**:
 hold **C** and click-drag to **claim land** — claiming a water source puts idle caravans to work
-hauling from it. (Caravans start idle until you claim something to haul.)
+hauling from it. (Caravans start idle until you claim something to haul.) **Population** is
+water-gated (§13): the settlement drinks from the store each second and grows when supply beats
+demand, declines (emigration) when it runs dry, capped by a placeholder housing ceiling — so the
+claim → caravan → water chain now drives the swarm's size up and down. A top-left **HUD** shows
+population + stored water. The map seeds **one water source inside the city** (served from the
+start) and **three on the outskirts** (claim them to grow further).
 
 **Threat #1 is scope.** Cross-cultural infection, espionage variety, narcotics ops, full
 faction trees, all phases — these are *later*. Build **breadth-last**.

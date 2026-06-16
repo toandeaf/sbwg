@@ -92,6 +92,9 @@ fn log_sim_events(mut inbox: MessageReader<OutgoingEvent>) {
             SimEvent::WaterDelivered { amount, stored } => {
                 info!("caravan delivered {amount} water (settlement now holds {stored})");
             }
+            SimEvent::PopulationChanged { population } => {
+                info!("population: {population}");
+            }
             SimEvent::Ticked { tick } => {
                 if tick % 50 == 0 {
                     info!("sim tick {tick}");

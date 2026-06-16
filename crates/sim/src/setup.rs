@@ -21,6 +21,10 @@ pub(crate) const TOWN_OWNER: PlayerId = 0;
 /// Tiles of claimed margin around each building (DESIGN §8 territory).
 const TERRITORY_MARGIN: i32 = 2;
 
+/// Grace buffer in the store at game start, so the town isn't instantly parched
+/// before the player claims a water source (DESIGN §13).
+const STARTING_WATER: u32 = 60;
+
 // Caravan spawn config (DESIGN §13: water logistics).
 pub(crate) const CARAVAN_COUNT: usize = 3;
 const CARAVAN_CAPACITY: u32 = 50; // units of water per trip
@@ -44,7 +48,7 @@ fn build_town(mut commands: Commands, map: Res<Map>, mut rng: ResMut<SimRng>) {
     let centre = IVec2::new(map.width / 2 - 1, map.height / 2 - 1);
     commands.spawn((
         Building { owner: TOWN_OWNER, tile: centre, size: IVec2::new(2, 2) },
-        WaterStore { pos: Vec2::new(cx, cy), stored: 0 },
+        WaterStore { pos: Vec2::new(cx, cy), stored: STARTING_WATER },
     ));
     placed.push((centre.x, centre.y, 2, 2));
 
@@ -117,6 +121,18 @@ fn init_storage(map: Res<Map>, mut stores: Query<(&Building, &mut WaterStore)>) 
     }
 }
 
+/// Claim the water source(s) inside the city bounds, so the town starts with one
+/// served source; the outskirts must be claimed by the player's directive.
+fn claim_home_water(map: Res<Map>, mut territory: ResMut<Territory>, settlements: Query<&Settlement>) {
+    let Ok(settlement) = settlements.single() else { return };
+    for water in map.water_tiles() {
+        if water.distance(settlement.pos) <= TOWN_RADIUS {
+            let tile = IVec2::new(water.x.floor() as i32, water.y.floor() as i32);
+            territory.claim_rect(settlement.owner, tile - IVec2::ONE, tile + IVec2::ONE);
+        }
+    }
+}
+
 fn spawn_leader(mut commands: Commands, map: Res<Map>, settlements: Query<&Settlement>) {
     let Ok(settlement) = settlements.single() else { return };
     let home = map.find_walkable_near(settlement.pos, 3.0);
@@ -147,7 +163,15 @@ impl Plugin for SetupPlugin {
             // runtime via the player's claim directive.
             .add_systems(
                 PostStartup,
-                (stamp_obstacles, stamp_territory, init_storage, spawn_leader, spawn_caravans).chain(),
+                (
+                    stamp_obstacles,
+                    stamp_territory,
+                    claim_home_water,
+                    init_storage,
+                    spawn_leader,
+                    spawn_caravans,
+                )
+                    .chain(),
             );
     }
 }

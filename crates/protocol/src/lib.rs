@@ -57,4 +57,6 @@ pub enum SimEvent {
     FocusChanged { player: PlayerId, at: TilePos },
     /// A caravan dropped a load of water at a settlement.
     WaterDelivered { amount: u32, stored: u32 },
+    /// A settlement's population changed (grew or shrank).
+    PopulationChanged { population: u32 },
 }

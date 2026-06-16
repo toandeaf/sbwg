@@ -24,21 +24,33 @@ pub struct Map {
 }
 
 impl Map {
-    /// Deterministic terrain: mostly sand with a scatter of oases and wells.
-    /// Water starts blocked; building footprints get stamped in later.
-    fn generate(width: i32, height: i32, seed: u64) -> Self {
-        let mut rng = SimRng(seed);
+    /// Deterministic terrain: one water source nestled inside the city bounds,
+    /// three more spread around the outskirts. Water starts blocked; building
+    /// footprints get stamped in later.
+    fn generate(width: i32, height: i32) -> Self {
         let mut tiles = vec![Terrain::Sand; (width * height) as usize];
-        for (kind, count) in [(Terrain::Oasis, 3usize), (Terrain::Well, 8usize)] {
-            for _ in 0..count {
-                let x = (rng.next_u64() % width as u64) as i32;
-                let y = (rng.next_u64() % height as u64) as i32;
-                let idx = (y * width + x) as usize;
-                if tiles[idx] == Terrain::Sand {
-                    tiles[idx] = kind;
-                }
-            }
+        let cx = width / 2;
+        let cy = height / 2;
+
+        // One source inside the city.
+        set_terrain(&mut tiles, width, height, cx + 3, cy + 2, Terrain::Oasis);
+
+        // Three sources out on the outskirts, spread around.
+        let outer = width.min(height) as f32 * 0.45;
+        for k in 0..3 {
+            let a = std::f32::consts::TAU * (k as f32 / 3.0) + 0.5;
+            let x = (cx as f32 + a.cos() * outer).round() as i32;
+            let y = (cy as f32 + a.sin() * outer).round() as i32;
+            set_terrain(
+                &mut tiles,
+                width,
+                height,
+                x.clamp(1, width - 2),
+                y.clamp(1, height - 2),
+                Terrain::Well,
+            );
         }
+
         let blocked = tiles.iter().map(|t| t.is_water()).collect();
         Self { width, height, tiles, blocked }
     }
@@ -95,9 +107,16 @@ impl Map {
     }
 }
 
+/// Write a terrain tile if it is in bounds.
+fn set_terrain(tiles: &mut [Terrain], width: i32, height: i32, x: i32, y: i32, kind: Terrain) {
+    if x >= 0 && y >= 0 && x < width && y < height {
+        tiles[(y * width + x) as usize] = kind;
+    }
+}
+
 impl Default for Map {
     fn default() -> Self {
-        Self::generate(MAP_W, MAP_H, 0x00C0_FFEE_1234_5678)
+        Self::generate(MAP_W, MAP_H)
     }
 }
 
