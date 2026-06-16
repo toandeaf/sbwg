@@ -23,11 +23,14 @@ const WATER_DEMAND_DIVISOR: u32 = 10;
 const SETTLEMENT_CAP: u32 = 200;
 /// Floor so a parched town dwindles rather than vanishing.
 const MIN_POP: u32 = 5;
+/// Seconds the store may sit empty before emigration begins (a drought grace).
+const DROUGHT_GRACE: u32 = 10;
 
 fn update_population(
     time: Res<Time>,
     mut elapsed: Local<f32>,
     mut last_level: Local<Option<u32>>,
+    mut dry_secs: Local<u32>,
     mut settlements: Query<&mut Settlement>,
     mut stores: Query<&mut WaterStore>,
     mut outbox: MessageWriter<OutgoingEvent>,
@@ -51,11 +54,17 @@ fn update_population(
 
     let before = settlement.population;
     if store.stored == 0 {
-        // Ran dry → emigration.
-        settlement.population = settlement.population.saturating_sub(1).max(MIN_POP);
-    } else if surplus && settlement.population < SETTLEMENT_CAP {
+        // Store empty — only emigrate after a sustained drought.
+        *dry_secs += 1;
+        if *dry_secs > DROUGHT_GRACE {
+            settlement.population = settlement.population.saturating_sub(1).max(MIN_POP);
+        }
+    } else {
+        *dry_secs = 0;
         // Comfortable, growing supply + room → grow.
-        settlement.population += 1;
+        if surplus && settlement.population < SETTLEMENT_CAP {
+            settlement.population += 1;
+        }
     }
 
     if settlement.population != before {

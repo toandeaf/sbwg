@@ -248,11 +248,20 @@ mod tests {
     }
 
     #[test]
-    fn population_declines_without_water() {
+    fn population_declines_after_sustained_drought() {
         let mut app = pop_test_app(60, 30); // small buffer, no inflow
-        run_seconds(&mut app, 40);
+        run_seconds(&mut app, 60); // drain + clear the grace + decline
         let after = population_of(&mut app);
-        assert!(after < 60, "population should decline once the store runs dry (-> {after})");
+        assert!(after < 60, "population should decline after a sustained drought (-> {after})");
+    }
+
+    #[test]
+    fn population_survives_short_drought() {
+        let mut app = pop_test_app(60, 0); // dry from the start
+        run_seconds(&mut app, 8); // within the 10s grace
+        assert_eq!(population_of(&mut app), 60, "should not emigrate during the grace period");
+        run_seconds(&mut app, 20); // well past the grace
+        assert!(population_of(&mut app) < 60, "should emigrate once the drought is sustained");
     }
 
     #[test]
