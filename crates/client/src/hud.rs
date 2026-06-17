@@ -52,9 +52,11 @@ fn update_hud(
     let (used, cap) = settlement
         .map(|s| (manpower::used(&territory, s.owner, s.pos), manpower::capacity(s.population)))
         .unwrap_or((0.0, 0.0));
+    let wealth = settlement.map(|s| s.treasury).unwrap_or(0);
+    let goods = settlement.map(|s| s.goods).unwrap_or(0);
     if let Ok(mut text) = hud.single_mut() {
         *text = Text::new(format!(
-            "Population: {population}\nWater: {water}\nCaravans: {active}/{total} active\nGarrison: {used:.0}/{cap:.0}"
+            "Population: {population}\nWater: {water}\nWealth: {wealth}\nGoods: {goods}\nCaravans: {active}/{total} active\nGarrison: {used:.0}/{cap:.0}"
         ));
     }
 }

@@ -389,10 +389,10 @@ mid-game spike of tension.
   Systems stay decoupled via Bevy **messages** — `IncomingCommand` (world→sim) and `OutgoingEvent`
   (sim→world) — the seam the network layer will later occupy.
 - **Module convention: one concern, one module, one `Plugin`.** `sim` = `map` (world state) +
-  `entity` (components + tick behaviour) + `caravan` (water-haul logistics) + `setup` (worldgen) +
-  `path` (A* helper) + `messages`; `client` = `world` (camera/terrain/territory) + `entities`
-  (sprites/swarm/caravans) + `player_input`. Top-level `SimPlugin`/`ClientPlugin` compose the
-  sub-plugins.
+  `entity` (components + tick behaviour) + `caravan` (water + trade logistics) + `population` +
+  `economy` (goods/wealth) + `manpower` (claim capacity) + `setup` (worldgen) + `path` (A*) +
+  `messages`; `client` = `world` (camera/terrain/territory) + `entities` (sprites/swarm/caravans/
+  markets) + `player_input` + `hud`. Top-level `SimPlugin`/`ClientPlugin` compose the sub-plugins.
 
 ### 17.3 Netcode **[LOCKED: approach]**
 - **Server-authoritative simulation with state replication.** *Not* lockstep determinism (a trap
@@ -447,8 +447,14 @@ and the HUD shows `Garrison: used/capacity`. So population → manpower → how 
 claimed water → population: every link in the loop is bounded. **Population** is
 water-gated (§13): the settlement drinks from the store each second and grows when supply beats
 demand, declines (emigration) when it runs dry, capped by a placeholder housing ceiling — so the
-claim → caravan → water chain now drives the swarm's size up and down. A top-left **HUD** shows
-population, stored water, and active/total caravans. The map seeds **one water source inside the
+claim → caravan → water chain now drives the swarm's size up and down. **Trade economy** (§9):
+population produces **goods** (diminishing); caravans haul a commodity by **job** — *water* (well →
+store) or *trade* (goods → **market** → wealth) — one state machine, branched. The planner covers
+claimed water sources first, then sends leftover caravans to markets, so **claiming more water costs
+trade capacity** (opportunity cost). **Wealth** comes from trade (minus per-building upkeep); the
+**build directive** (hold **B**, click) raises a building on owned ground for a wealth cost, so
+wealth bounds building. A top-left **HUD** shows population, water, wealth, goods, active/total
+caravans, and garrison used/capacity. The map seeds **one water source inside the
 city** (served from the start) and **three on the outskirts**; caravan capacity is tuned low so the
 in-city source alone can't sustain the starting pop — you must claim outskirts to grow.
 

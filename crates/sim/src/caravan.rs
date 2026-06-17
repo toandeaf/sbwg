@@ -1,12 +1,13 @@
-//! Caravan logistics — the first "action": haul water from claimed sources to
-//! the central store along A* routes.
+//! Caravan logistics (DESIGN §13/§9). A caravan hauls a commodity between its
+//! **home** (the town hub) and a **target**, branching by [`CaravanJob`]:
 //!
-//! Assignment is **event-driven**: caravans re-plan whenever territory changes
-//! or a caravan is added. The planner gathers every claimed, reachable water
-//! source and partitions them across the caravans — one nearest-neighbour tour
-//! split into balanced, spatially-coherent slices — so all sources get covered
-//! (caravan A serves one slice, caravan B the next, …). Each caravan then cycles
-//! its slice, hauling each load back to the store.
+//! * **Water** — empty out to a well (target), load, haul back, deposit to the store.
+//! * **Trade** — load goods at home, haul out to a market (target), sell for wealth.
+//!
+//! One state machine serves both; only the load/unload effects differ. Assignment
+//! is event-driven (territory change or caravan added): it covers claimed water
+//! sources first, then sends leftover caravans to markets — so claiming more water
+//! costs you trade capacity (opportunity cost).
 
 use bevy::prelude::*;
 use protocol::SimEvent;
@@ -20,13 +21,28 @@ use crate::path::find_path;
 const CARAVAN_SPEED: f32 = 2.0; // tiles/second
 const LOAD_SECS: f32 = 1.5;
 const UNLOAD_SECS: f32 = 1.5;
+/// Wealth earned per unit of goods sold at a market.
+const GOODS_PRICE: u32 = 2;
 
 /// Water storage held by a designated central building (DESIGN §13).
 #[derive(Component, Debug)]
 pub struct WaterStore {
-    /// Walkable drop-point beside the storage building (where caravans unload).
+    /// Walkable drop-point beside the storage building (the town's hub).
     pub pos: Vec2,
     pub stored: u32,
+}
+
+/// A market a trade caravan can sell goods at (DESIGN §9). A walkable spot.
+#[derive(Component, Debug)]
+pub struct Market {
+    pub pos: Vec2,
+}
+
+/// What a caravan hauls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaravanJob {
+    Water,
+    Trade,
 }
 
 /// Set when a caravan is added, so the planner re-runs. Territory changes are
@@ -34,7 +50,8 @@ pub struct WaterStore {
 #[derive(Resource, Default)]
 struct ReplanCaravans(bool);
 
-/// What a caravan is doing right now.
+/// Where a caravan is in its haul cycle. (Names predate the job split: "Source"
+/// = the target end, "Store" = home; the *effect* at each end depends on job.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CaravanState {
     Idle,
@@ -44,9 +61,7 @@ pub enum CaravanState {
     Unloading,
 }
 
-/// A real, authoritative goods-hauler. It cycles through an assigned `tour` of
-/// water draw-points, hauling each load back to `home` (the store). Position is
-/// interpolated by the client between sim ticks.
+/// A real, authoritative goods-hauler. Interpolated by the client between ticks.
 #[derive(Component, Debug)]
 pub struct Caravan {
     pub prev: Vec2,
@@ -57,13 +72,12 @@ pub struct Caravan {
     pub cargo: u32,
     pub state: CaravanState,
     pub timer: f32,
-    /// Store drop-point this caravan returns to.
+    pub job: CaravanJob,
+    /// Town hub: store drop-point for water, goods pickup for trade.
     pub home: Vec2,
-    /// Assigned water draw-points, in visit order.
-    pub tour: Vec<Vec2>,
-    /// Index of the source currently being serviced within `tour`.
-    pub tour_index: usize,
-    /// Current leg's A* waypoints (from where the caravan is to its target).
+    /// Water draw-point (Water job) or market (Trade job).
+    pub target: Vec2,
+    /// Current leg's A* waypoints.
     pub route: Vec<Vec2>,
     pub wp: usize,
 }
@@ -80,9 +94,9 @@ impl Caravan {
             cargo: 0,
             state: CaravanState::Idle,
             timer: 0.0,
+            job: CaravanJob::Water,
             home: pos,
-            tour: Vec::new(),
-            tour_index: 0,
+            target: pos,
             route: Vec::new(),
             wp: 0,
         }
@@ -96,12 +110,14 @@ fn flag_caravan_added(added: Query<(), Added<Caravan>>, mut flag: ResMut<ReplanC
     }
 }
 
-/// Re-plan all caravans when territory changes or one was added (DESIGN §13).
+/// Assign caravans: cover claimed water sources first, then send the rest to
+/// markets (DESIGN §13/§9). Re-runs on territory change or a caravan being added.
 fn plan_caravans(
     map: Res<Map>,
     territory: Res<Territory>,
     settlements: Query<&Settlement>,
     stores: Query<&WaterStore>,
+    markets: Query<&Market>,
     mut flag: ResMut<ReplanCaravans>,
     mut caravans: Query<(Entity, &mut Caravan)>,
 ) {
@@ -112,94 +128,71 @@ fn plan_caravans(
     let Ok(settlement) = settlements.single() else { return };
     let Ok(store) = stores.single() else { return };
     let owner = settlement.owner;
-    let store_pos = store.pos;
-    let store_tile = tile_of(store_pos);
+    let home = store.pos;
+    let store_tile = tile_of(home);
+    let reachable = |draw: Vec2| find_path(&map, store_tile, tile_of(draw)).is_some();
 
-    // Claimed, reachable water sources → their walkable draw-points.
-    let mut draws: Vec<Vec2> = Vec::new();
-    for water in map.water_tiles() {
-        let tile = tile_of(water);
-        if territory.owner_at(tile.x, tile.y) != Some(owner) {
-            continue;
-        }
-        let draw = map.find_walkable_near(water, 1.0);
-        if find_path(&map, store_tile, tile_of(draw)).is_some() {
-            draws.push(draw);
-        }
-    }
+    // Claimed, reachable water draw-points (nearest first).
+    let mut water: Vec<Vec2> = map
+        .water_tiles()
+        .into_iter()
+        .filter(|w| territory.owner_at(w.x.floor() as i32, w.y.floor() as i32) == Some(owner))
+        .map(|w| map.find_walkable_near(w, 1.0))
+        .filter(|d| reachable(*d))
+        .collect();
+    water.sort_by(|a, b| a.distance_squared(home).partial_cmp(&b.distance_squared(home)).unwrap());
 
-    // Partition the sources across the caravans, then hand each its slice.
+    // Reachable markets (nearest first).
+    let mut trade: Vec<Vec2> = markets.iter().map(|m| m.pos).filter(|d| reachable(*d)).collect();
+    trade.sort_by(|a, b| a.distance_squared(home).partial_cmp(&b.distance_squared(home)).unwrap());
+
+    // Priority: water first, then trade — so water is covered before trade.
+    let mut priority: Vec<(CaravanJob, Vec2)> = Vec::new();
+    priority.extend(water.into_iter().map(|d| (CaravanJob::Water, d)));
+    priority.extend(trade.into_iter().map(|d| (CaravanJob::Trade, d)));
+
     let cars: Vec<Entity> = caravans.iter().map(|(e, _)| e).collect();
-    let plan = partition(&draws, store_pos, cars.len());
-    let mut tours: HashMap<Entity, Vec<Vec2>> = HashMap::new();
-    for (ci, entity) in cars.iter().enumerate() {
-        tours.insert(*entity, plan[ci].iter().map(|&i| draws[i]).collect());
+    let mut plan: HashMap<Entity, (CaravanJob, Vec2)> = HashMap::new();
+    for (i, entity) in cars.iter().enumerate() {
+        if let Some(&job_target) = priority.get(i) {
+            plan.insert(*entity, job_target);
+        }
     }
 
     for (entity, mut caravan) in &mut caravans {
-        let tour = tours.remove(&entity).unwrap_or_default();
-        caravan.home = store_pos;
+        caravan.home = home;
         caravan.cargo = 0;
-        caravan.tour = tour;
-        caravan.tour_index = 0;
-        if caravan.tour.is_empty() {
-            caravan.state = CaravanState::Idle;
-            caravan.route.clear();
-            caravan.wp = 0;
-        } else {
-            let goal = caravan.tour[0];
-            begin_leg(&mut caravan, &map, goal);
-            caravan.state = CaravanState::ToSource;
+        match plan.remove(&entity) {
+            Some((job, target)) => {
+                caravan.job = job;
+                caravan.target = target;
+                // Return to the hub first, then start the cycle (handles reassignment
+                // from anywhere in the field).
+                begin_leg(&mut caravan, &map, home);
+                caravan.state = CaravanState::ToStore;
+            }
+            None => {
+                caravan.state = CaravanState::Idle;
+                caravan.route.clear();
+                caravan.wp = 0;
+            }
         }
     }
 }
 
-/// Order the draws into one nearest-neighbour tour from the store, then split it
-/// into `n` balanced, contiguous slices — one per caravan.
-fn partition(draws: &[Vec2], store: Vec2, n: usize) -> Vec<Vec<usize>> {
-    let mut chunks = vec![Vec::new(); n];
-    if n == 0 || draws.is_empty() {
-        return chunks;
-    }
-    let mut remaining: Vec<usize> = (0..draws.len()).collect();
-    let mut order = Vec::with_capacity(draws.len());
-    let mut cur = store;
-    while !remaining.is_empty() {
-        let k = (0..remaining.len())
-            .min_by(|&a, &b| {
-                draws[remaining[a]]
-                    .distance_squared(cur)
-                    .partial_cmp(&draws[remaining[b]].distance_squared(cur))
-                    .unwrap()
-            })
-            .unwrap();
-        let si = remaining.swap_remove(k);
-        order.push(si);
-        cur = draws[si];
-    }
-    let base = order.len() / n;
-    let extra = order.len() % n;
-    let mut idx = 0;
-    for (ci, chunk) in chunks.iter_mut().enumerate() {
-        let size = base + if ci < extra { 1 } else { 0 };
-        *chunk = order[idx..idx + size].to_vec();
-        idx += size;
-    }
-    chunks
-}
-
-/// Move each caravan along its route, switching legs at the ends (DESIGN §13).
+/// Move each caravan along its route, branching the load/unload effects by job.
 fn drive_caravans(
     time: Res<Time>,
     map: Res<Map>,
     mut caravans: Query<&mut Caravan>,
     mut stores: Query<&mut WaterStore>,
+    mut settlements: Query<&mut Settlement>,
     mut outbox: MessageWriter<OutgoingEvent>,
 ) {
     let dt = time.delta_secs();
     let max_step = CARAVAN_SPEED * dt;
     for mut c in &mut caravans {
-        c.prev = c.pos; // snapshot for client interpolation
+        c.prev = c.pos;
         match c.state {
             CaravanState::Idle => {}
             CaravanState::ToSource => {
@@ -211,7 +204,21 @@ fn drive_caravans(
             CaravanState::Loading => {
                 c.timer -= dt;
                 if c.timer <= 0.0 {
-                    c.cargo = c.capacity;
+                    match c.job {
+                        CaravanJob::Water => c.cargo = c.capacity, // draw from the well
+                        CaravanJob::Trade => {
+                            // Sell goods at the market.
+                            let amount = c.cargo;
+                            c.cargo = 0;
+                            if amount > 0 {
+                                if let Ok(mut s) = settlements.single_mut() {
+                                    let earned = amount * GOODS_PRICE;
+                                    s.treasury += earned;
+                                    outbox.write(OutgoingEvent(SimEvent::GoodsSold { amount, earned }));
+                                }
+                            }
+                        }
+                    }
                     let home = c.home;
                     begin_leg(&mut c, &map, home);
                     c.state = CaravanState::ToStore;
@@ -226,23 +233,30 @@ fn drive_caravans(
             CaravanState::Unloading => {
                 c.timer -= dt;
                 if c.timer <= 0.0 {
-                    let amount = c.cargo;
-                    c.cargo = 0;
-                    if let Ok(mut store) = stores.single_mut() {
-                        store.stored += amount;
-                        outbox.write(OutgoingEvent(SimEvent::WaterDelivered {
-                            amount,
-                            stored: store.stored,
-                        }));
+                    match c.job {
+                        CaravanJob::Water => {
+                            let amount = c.cargo;
+                            c.cargo = 0;
+                            if let Ok(mut store) = stores.single_mut() {
+                                store.stored += amount;
+                                outbox.write(OutgoingEvent(SimEvent::WaterDelivered {
+                                    amount,
+                                    stored: store.stored,
+                                }));
+                            }
+                        }
+                        CaravanJob::Trade => {
+                            // Load goods to carry to market.
+                            if let Ok(mut s) = settlements.single_mut() {
+                                let load = c.capacity.min(s.goods);
+                                s.goods -= load;
+                                c.cargo = load;
+                            }
+                        }
                     }
-                    if c.tour.is_empty() {
-                        c.state = CaravanState::Idle;
-                    } else {
-                        c.tour_index = (c.tour_index + 1) % c.tour.len();
-                        let goal = c.tour[c.tour_index];
-                        begin_leg(&mut c, &map, goal);
-                        c.state = CaravanState::ToSource;
-                    }
+                    let target = c.target;
+                    begin_leg(&mut c, &map, target);
+                    c.state = CaravanState::ToSource;
                 }
             }
         }

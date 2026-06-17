@@ -106,6 +106,9 @@ fn log_sim_events(mut inbox: MessageReader<OutgoingEvent>) {
             SimEvent::PopulationChanged { population } => {
                 info!("population: {population}");
             }
+            SimEvent::GoodsSold { amount, earned } => {
+                info!("trade: sold {amount} goods for {earned} wealth");
+            }
             SimEvent::Ticked { tick } => {
                 if tick % 50 == 0 {
                     info!("sim tick {tick}");

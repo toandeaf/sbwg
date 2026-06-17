@@ -5,7 +5,7 @@
 use bevy::prelude::*;
 use bevy::time::Fixed;
 use protocol::PlayerId;
-use sim::{Building, Caravan, Map, Mover, Settlement, Territory};
+use sim::{Building, Caravan, Map, Market, Mover, Settlement, Territory};
 
 use crate::{tile_to_world, TILE_PX};
 
@@ -27,6 +27,7 @@ impl Plugin for EntityViewPlugin {
                 attach_leader_sprite,
                 sync_leader_transform,
                 attach_building_sprites,
+                attach_market_sprites,
                 attach_caravan_visual,
                 (sync_caravan_transform, follow_caravan_train).chain(),
                 reconcile_swarm,
@@ -88,6 +89,23 @@ fn attach_building_sprites(
         commands.entity(entity).insert((
             Sprite::from_color(Color::srgb(0.40 + v, 0.27 + v, 0.15 + v), size),
             Transform::from_translation(world.extend(0.5)),
+        ));
+    }
+}
+
+// ---- Markets ---------------------------------------------------------------
+
+/// Draw each market as a gold trading-post square.
+fn attach_market_sprites(
+    mut commands: Commands,
+    map: Res<Map>,
+    new_markets: Query<(Entity, &Market), Without<Sprite>>,
+) {
+    for (entity, market) in &new_markets {
+        let world = tile_to_world(market.pos, &map);
+        commands.entity(entity).insert((
+            Sprite::from_color(Color::srgb(0.85, 0.62, 0.15), Vec2::splat(TILE_PX * 0.9)),
+            Transform::from_translation(world.extend(0.6)),
         ));
     }
 }

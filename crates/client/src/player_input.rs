@@ -2,7 +2,7 @@
 
 use bevy::prelude::*;
 use protocol::{PlayerCommand, PlayerId, TilePos};
-use sim::{manpower, IncomingCommand, Map, Settlement, Territory};
+use sim::{economy, manpower, IncomingCommand, Map, Settlement, Territory};
 
 use crate::{tile_to_world, TILE_PX};
 
@@ -19,14 +19,18 @@ struct ClaimDrag {
 #[derive(Component)]
 struct ClaimPreview;
 
-/// Input → commands, the claim directive, and camera pan/zoom.
+/// The translucent cursor previewing where a building would go.
+#[derive(Component)]
+struct BuildPreview;
+
+/// Input → commands, the claim/build directives, and camera pan/zoom.
 pub struct PlayerInputPlugin;
 
 impl Plugin for PlayerInputPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ClaimDrag>()
-            .add_systems(Startup, spawn_claim_preview)
-            .add_systems(Update, (click_to_focus, claim_land, pan_zoom_camera));
+            .add_systems(Startup, (spawn_claim_preview, spawn_build_preview))
+            .add_systems(Update, (click_to_focus, claim_land, build_structure, pan_zoom_camera));
     }
 }
 
@@ -54,7 +58,8 @@ fn click_to_focus(
     map: Res<Map>,
     mut outbox: MessageWriter<IncomingCommand>,
 ) {
-    if keys.pressed(KeyCode::KeyC) || !buttons.just_pressed(MouseButton::Left) {
+    // C = claim, B = build — both suppress focus clicks.
+    if keys.pressed(KeyCode::KeyC) || keys.pressed(KeyCode::KeyB) || !buttons.just_pressed(MouseButton::Left) {
         return;
     }
     let Some(tile) = cursor_tile(&windows, &cameras, &map) else { return };
@@ -62,6 +67,59 @@ fn click_to_focus(
         player: ME,
         at: TilePos::new(tile.x, tile.y),
     }));
+}
+
+fn spawn_build_preview(mut commands: Commands) {
+    commands.spawn((
+        BuildPreview,
+        Sprite::from_color(Color::srgba(0.3, 0.9, 0.4, 0.4), Vec2::splat(TILE_PX)),
+        Transform::from_translation(Vec3::new(0.0, 0.0, 3.0)),
+        Visibility::Hidden,
+    ));
+}
+
+/// Directive: hold **B** and click a tile to build there (costs wealth). The
+/// cursor previews green where you can build, red where you can't.
+fn build_structure(
+    keys: Res<ButtonInput<KeyCode>>,
+    buttons: Res<ButtonInput<MouseButton>>,
+    windows: Query<&Window>,
+    cameras: Query<(&Camera, &GlobalTransform)>,
+    map: Res<Map>,
+    territory: Res<Territory>,
+    settlements: Query<&Settlement>,
+    mut outbox: MessageWriter<IncomingCommand>,
+    mut preview: Query<(&mut Sprite, &mut Transform, &mut Visibility), With<BuildPreview>>,
+) {
+    let cursor = keys.pressed(KeyCode::KeyB).then(|| cursor_tile(&windows, &cameras, &map)).flatten();
+    let Some(tile) = cursor else {
+        if let Ok((_, _, mut vis)) = preview.single_mut() {
+            *vis = Visibility::Hidden;
+        }
+        return;
+    };
+
+    let treasury = settlements.iter().find(|s| s.owner == ME).map(|s| s.treasury).unwrap_or(0);
+    let buildable = economy::can_build(&map, &territory, treasury, ME, tile);
+
+    if let Ok((mut sprite, mut transform, mut vis)) = preview.single_mut() {
+        let centre = Vec2::new(tile.x as f32 + 0.5, tile.y as f32 + 0.5);
+        sprite.custom_size = Some(Vec2::splat(TILE_PX));
+        sprite.color = if buildable {
+            Color::srgba(0.3, 0.9, 0.4, 0.45)
+        } else {
+            Color::srgba(0.9, 0.2, 0.2, 0.45)
+        };
+        transform.translation = tile_to_world(centre, &map).extend(3.0);
+        *vis = Visibility::Visible;
+    }
+
+    if buttons.just_pressed(MouseButton::Left) {
+        outbox.write(IncomingCommand(PlayerCommand::Build {
+            player: ME,
+            at: TilePos::new(tile.x, tile.y),
+        }));
+    }
 }
 
 fn spawn_claim_preview(mut commands: Commands) {

@@ -7,6 +7,7 @@
 use bevy::prelude::*;
 use protocol::{PlayerCommand, PlayerId, SimEvent};
 
+use crate::economy;
 use crate::manpower;
 use crate::map::{Map, SimRng, SimTick, Territory};
 use crate::messages::{IncomingCommand, OutgoingEvent};
@@ -28,6 +29,9 @@ pub struct Settlement {
     /// Continuous tile-space position (DESIGN §6.2).
     pub pos: Vec2,
     pub population: u32,
+    pub treasury: u32,
+    /// Goods awaiting trade (produced by the economy, hauled out by caravans).
+    pub goods: u32,
 }
 
 /// A physical structure occupying a tile rectangle. Buildings block movement
@@ -68,8 +72,10 @@ pub struct Mover {
 fn apply_commands(
     mut inbox: MessageReader<IncomingCommand>,
     mut outbox: MessageWriter<OutgoingEvent>,
+    mut map: ResMut<Map>,
     mut territory: ResMut<Territory>,
-    settlements: Query<&Settlement>,
+    mut settlements: Query<&mut Settlement>,
+    mut commands: Commands,
 ) {
     for IncomingCommand(cmd) in inbox.read() {
         match cmd {
@@ -95,6 +101,20 @@ fn apply_commands(
                 ) {
                     territory.claim_rect(*player, min, max);
                 }
+            }
+            PlayerCommand::Build { player, at } => {
+                let tile = IVec2::new(at.x, at.y);
+                let Some(mut settlement) = settlements.iter_mut().find(|s| s.owner == *player) else {
+                    continue;
+                };
+                // Build only on owned, open ground we can afford (DESIGN §9).
+                if !economy::can_build(&map, &territory, settlement.treasury, *player, tile) {
+                    continue;
+                }
+                settlement.treasury -= economy::BUILD_COST;
+                commands.spawn(Building { owner: *player, tile, size: IVec2::new(1, 1) });
+                let idx = map.idx(tile.x, tile.y);
+                map.blocked[idx] = true; // new building blocks its tile
             }
         }
     }

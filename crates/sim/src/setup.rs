@@ -5,7 +5,7 @@
 use bevy::prelude::*;
 use protocol::PlayerId;
 
-use crate::caravan::{Caravan, WaterStore};
+use crate::caravan::{Caravan, Market, WaterStore};
 use crate::entity::{Building, Mover, Settlement};
 use crate::map::{Map, SimRng, Territory};
 
@@ -24,9 +24,13 @@ const TERRITORY_MARGIN: i32 = 2;
 /// Grace buffer in the store at game start, so the town isn't instantly parched
 /// before the player claims a water source (DESIGN §13).
 const STARTING_WATER: u32 = 60;
+/// Treasury at game start, enough to bridge to first trade income (DESIGN §9).
+const STARTING_WEALTH: u32 = 400;
+/// Markets to scatter around the map for trade caravans (DESIGN §9).
+const MARKET_COUNT: usize = 4;
 
-// Caravan spawn config (DESIGN §13: water logistics).
-pub(crate) const CARAVAN_COUNT: usize = 3;
+// Caravan spawn config (DESIGN §13: water logistics + §9 trade).
+pub(crate) const CARAVAN_COUNT: usize = 6;
 // Deliberately modest so a single source can't sustain the starting pop —
 // the player must claim more to grow (tune up later for balance).
 const CARAVAN_CAPACITY: u32 = 30; // units of water per trip
@@ -35,7 +39,13 @@ const CARAVAN_PEOPLE: u32 = 4;
 
 fn spawn_settlement(mut commands: Commands, map: Res<Map>) {
     let pos = Vec2::new(map.width as f32 / 2.0, map.height as f32 / 2.0);
-    commands.spawn(Settlement { owner: TOWN_OWNER, pos, population: SETTLEMENT_POP });
+    commands.spawn(Settlement {
+        owner: TOWN_OWNER,
+        pos,
+        population: SETTLEMENT_POP,
+        treasury: STARTING_WEALTH,
+        goods: 0,
+    });
 }
 
 /// Lay out a clustered town around the settlement anchor, leaving 1-tile gaps as
@@ -141,7 +151,7 @@ fn spawn_leader(mut commands: Commands, map: Res<Map>, settlements: Query<&Settl
     commands.spawn(Mover { home, prev: home, pos: home, vel: Vec2::ZERO });
 }
 
-/// Spawn idle caravans parked at the water store; `assign_caravans` routes them.
+/// Spawn idle caravans parked at the water store; the planner routes them.
 fn spawn_caravans(mut commands: Commands, stores: Query<&WaterStore>) {
     let Ok(store) = stores.single() else { return };
     for _ in 0..CARAVAN_COUNT {
@@ -151,6 +161,17 @@ fn spawn_caravans(mut commands: Commands, stores: Query<&WaterStore>) {
             CARAVAN_PEOPLE,
             CARAVAN_CAPACITY,
         ));
+    }
+}
+
+/// Scatter markets around the map for trade caravans (DESIGN §9).
+fn spawn_markets(mut commands: Commands, map: Res<Map>, settlements: Query<&Settlement>) {
+    let Ok(settlement) = settlements.single() else { return };
+    let dist = map.width.min(map.height) as f32 * 0.4;
+    for k in 0..MARKET_COUNT {
+        let a = std::f32::consts::TAU * (k as f32 / MARKET_COUNT as f32) + 0.4;
+        let p = settlement.pos + Vec2::new(a.cos(), a.sin()) * dist;
+        commands.spawn(Market { pos: map.find_walkable_near(p, 0.0) });
     }
 }
 
@@ -172,6 +193,7 @@ impl Plugin for SetupPlugin {
                     init_storage,
                     spawn_leader,
                     spawn_caravans,
+                    spawn_markets,
                 )
                     .chain(),
             );

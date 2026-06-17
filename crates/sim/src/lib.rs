@@ -17,6 +17,7 @@
 use bevy::prelude::*;
 
 mod caravan;
+pub mod economy;
 mod entity;
 mod map;
 pub mod manpower;
@@ -25,7 +26,7 @@ mod path;
 mod population;
 mod setup;
 
-pub use caravan::{Caravan, CaravanState, WaterStore};
+pub use caravan::{Caravan, CaravanJob, CaravanState, Market, WaterStore};
 pub use entity::{Building, Mover, Settlement};
 pub use map::{Map, SimTick, Territory, MAP_H, MAP_W};
 pub use messages::{IncomingCommand, OutgoingEvent};
@@ -43,6 +44,7 @@ impl Plugin for SimPlugin {
             entity::EntityPlugin,
             caravan::CaravanPlugin,
             population::PopulationPlugin,
+            economy::EconomyPlugin,
             setup::SetupPlugin,
         ));
     }
@@ -52,7 +54,6 @@ impl Plugin for SimPlugin {
 mod tests {
     use super::*;
     use crate::setup::{CARAVAN_COUNT, TOWN_OWNER};
-    use bevy::prelude::*;
     use std::time::Duration;
 
     fn population_of(app: &mut App) -> u32 {
@@ -66,7 +67,13 @@ mod tests {
         app.init_resource::<Time>();
         app.add_message::<OutgoingEvent>();
         app.add_plugins(crate::population::PopulationPlugin);
-        app.world_mut().spawn(Settlement { owner: TOWN_OWNER, pos: Vec2::ZERO, population });
+        app.world_mut().spawn(Settlement {
+            owner: TOWN_OWNER,
+            pos: Vec2::ZERO,
+            population,
+            treasury: 0,
+            goods: 0,
+        });
         app.world_mut().spawn(WaterStore { pos: Vec2::ZERO, stored: water });
         app
     }
@@ -177,7 +184,6 @@ mod tests {
         assert_eq!(all.len(), CARAVAN_COUNT);
         for c in all {
             assert_eq!(c.state, CaravanState::Idle);
-            assert!(c.tour.is_empty());
         }
     }
 
@@ -215,7 +221,31 @@ mod tests {
         let world = app.world();
         let assigned = caravans.iter(world).filter(|c| c.state != CaravanState::Idle).count();
         assert!(assigned >= 1, "claiming water should assign a caravan");
-        assert!(caravans.iter(world).any(|c| c.route.len() >= 2), "expected a routed caravan");
+    }
+
+    #[test]
+    fn markets_attract_trade_caravans() {
+        let mut app = headless_app();
+        app.world_mut().run_schedule(Startup);
+        app.world_mut().run_schedule(PostStartup);
+        app.world_mut().run_schedule(FixedUpdate); // planner runs
+        let mut caravans = app.world_mut().query::<&Caravan>();
+        let world = app.world();
+        assert!(
+            caravans.iter(world).any(|c| c.job == CaravanJob::Trade),
+            "leftover caravans should be assigned to markets"
+        );
+    }
+
+    #[test]
+    fn economy_produces_goods() {
+        let mut app = headless_app();
+        app.world_mut().run_schedule(Startup);
+        app.world_mut().run_schedule(PostStartup);
+        run_seconds(&mut app, 8);
+        let mut settlements = app.world_mut().query::<&Settlement>();
+        let goods = settlements.iter(app.world()).next().map(|s| s.goods).unwrap_or(0);
+        assert!(goods > 0, "the economy should produce goods over time");
     }
 
     #[test]

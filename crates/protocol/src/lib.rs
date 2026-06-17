@@ -53,6 +53,8 @@ pub enum PlayerCommand {
     SetFocus { player: PlayerId, at: TilePos },
     /// Directive: claim every tile in the inclusive rectangle for `player`.
     ClaimArea { player: PlayerId, min: TilePos, max: TilePos },
+    /// Directive: construct a building on a tile (costs wealth).
+    Build { player: PlayerId, at: TilePos },
 }
 
 /// Sim → client. Notable state changes. Stub set.
@@ -66,4 +68,6 @@ pub enum SimEvent {
     WaterDelivered { amount: u32, stored: u32 },
     /// A settlement's population changed (grew or shrank).
     PopulationChanged { population: u32 },
+    /// A trade caravan sold goods at a market.
+    GoodsSold { amount: u32, earned: u32 },
 }
